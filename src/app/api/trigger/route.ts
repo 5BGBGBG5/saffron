@@ -12,14 +12,13 @@ export async function POST(request: NextRequest) {
   const runUrl = `${protocol}://${host}/api/ads-agent/run`;
 
   try {
+    // Use CRON_SECRET for internal auth — this is a trusted server-side route
+    const cronSecret = process.env.CRON_SECRET;
     const res = await fetch(runUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // Forward the authorization header if present (for CRON_SECRET)
-        ...(request.headers.get('authorization')
-          ? { authorization: request.headers.get('authorization')! }
-          : {}),
+        ...(cronSecret ? { authorization: `Bearer ${cronSecret}` } : {}),
       },
     });
 
