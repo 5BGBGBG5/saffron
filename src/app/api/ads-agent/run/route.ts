@@ -200,6 +200,13 @@ AD MANAGEMENT RULES:
 - For enable_ad, action_detail must include: { "ad_group_id": "...", "ad_id": "..." }
 - For create_ad, action_detail must include: { "ad_group_id": "...", "headlines": [{"text": "..."}], "descriptions": [{"text": "..."}], "final_urls": ["..."] }
 
+ACTION DETAIL ID RULES:
+- ALL IDs in action_detail (campaign_id, ad_group_id, ad_id, criterion_id, budget_id) MUST be real numeric Google Ads IDs from the data provided above. NEVER use placeholder values like "all_active", "all", or descriptive strings.
+- For add_negative_keyword, action_detail must include: { "campaign_id": "<numeric campaign ID>", "keyword_text": "...", "match_type": "EXACT|PHRASE|BROAD" }
+- If you want to add a negative keyword to multiple campaigns, create a SEPARATE proposal for each campaign with its specific numeric campaign_id.
+- For adjust_bid, action_detail must include: { "ad_group_id": "...", "criterion_id": "...", "new_bid_micros": "..." }
+- For adjust_budget, action_detail must include: { "budget_id": "...", "new_amount_micros": "..." }
+
 ACCOUNT CONFIG:
 ${JSON.stringify({ name: layer1.account.account_name, budget: layer1.account.monthly_budget, mode: layer1.account.agent_mode, icp: layer1.account.icp_definition, goals: layer1.account.goals }, null, 2)}
 
