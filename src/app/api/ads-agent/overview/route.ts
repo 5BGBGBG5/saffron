@@ -6,11 +6,11 @@
  * client-side for flexible 7-day or 30-day views.
  */
 
-// TODO: This route uses CRON_SECRET bearer auth which is exposed client-side
-// via the fetch call in the dashboard. Should be migrated to Supabase session
-// auth in a future pass. Keeping consistent with existing routes for now.
+// TODO: This route has no auth — consistent with other dashboard-facing routes
+// (decide, insights, hubspot-sync). Should be migrated to Supabase session auth
+// in a future pass.
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { queryGoogleAds, microsToDollars } from '@/lib/google-ads';
 
@@ -22,13 +22,7 @@ const supabase = createClient(
   { auth: { persistSession: false, autoRefreshToken: false } }
 );
 
-export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+export async function GET() {
   try {
     const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
 

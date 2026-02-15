@@ -2447,10 +2447,7 @@ export default function SaffronPage() {
   const fetchOverview = useCallback(async () => {
     setOverviewLoading(true);
     try {
-      const cronSecret = process.env.NEXT_PUBLIC_CRON_SECRET || '';
-      const res = await fetch('/api/ads-agent/overview', {
-        headers: cronSecret ? { authorization: `Bearer ${cronSecret}` } : {},
-      });
+      const res = await fetch('/api/ads-agent/overview');
       if (res.ok) {
         const data = await res.json();
         setOverviewData(data);
