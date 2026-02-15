@@ -36,7 +36,7 @@ export async function createResponsiveSearchAd(
     [{
       create: {
         adGroup: `customers/${cid}/adGroups/${adGroupId}`,
-        status: 'PAUSED', // Safety: create paused for human review
+        status: 'ENABLED', // Go live immediately on approval
         ad: {
           responsiveSearchAd: {
             headlines: opts.headlines.map(h => ({

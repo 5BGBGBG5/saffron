@@ -170,6 +170,35 @@ async function executeGoogleAdsAction(
         return { success: true, result };
       }
 
+      case 'replace_ad': {
+        // Compound action: create new RSA, then pause old ad
+        const agId = get(actionDetail, 'ad_group_id', 'adGroupId');
+        const oldAdId = get(actionDetail, 'old_ad_id', 'oldAdId');
+        const headlines = get(actionDetail, 'headlines', 'headlines') as Array<{ text: string; pinnedField?: 'HEADLINE_1' | 'HEADLINE_2' | 'HEADLINE_3' }> | undefined;
+        const descriptions = get(actionDetail, 'descriptions', 'descriptions') as Array<{ text: string; pinnedField?: 'DESCRIPTION_1' | 'DESCRIPTION_2' }> | undefined;
+        const finalUrls = get(actionDetail, 'final_urls', 'finalUrls') as string[] | undefined;
+        const path1 = get(actionDetail, 'path1', 'path1') as string | undefined;
+        const path2 = get(actionDetail, 'path2', 'path2') as string | undefined;
+
+        if (!agId || !oldAdId || !headlines || !descriptions || !finalUrls) {
+          return { success: false, error: `Missing required fields for replace_ad: ${JSON.stringify(actionDetail)}` };
+        }
+
+        // Step 1: Create the new ad first (fail-safe: don't pause old ad if creation fails)
+        const createResult = await createResponsiveSearchAd(String(agId), {
+          headlines,
+          descriptions,
+          finalUrls,
+          ...(path1 && { path1: String(path1) }),
+          ...(path2 && { path2: String(path2) }),
+        }, customerId);
+
+        // Step 2: Pause the old ad (only runs if create succeeded)
+        const pauseResult = await pauseAd(String(agId), String(oldAdId), customerId);
+
+        return { success: true, result: { created: createResult, paused: pauseResult } };
+      }
+
       case 'reallocate_budget': {
         // Budget reallocation: decrease source campaign budget, increase target
         const fromBudgetId = get(actionDetail, 'from_budget_id', 'fromBudgetId');

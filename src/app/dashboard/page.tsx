@@ -279,6 +279,7 @@ const actionTypeLabels: Record<string, string> = {
   reallocate_budget: 'Reallocate Budget',
   pause_ad: 'Pause Ad',
   enable_ad: 'Enable Ad',
+  replace_ad: 'Replace Ad',
 };
 
 const actionTypeTooltips: Record<string, string> = {
@@ -292,6 +293,7 @@ const actionTypeTooltips: Record<string, string> = {
   pause_campaign: 'Saffron recommends pausing this campaign. Campaigns with recent conversions are protected from pausing by guardrails.',
   pause_ad: 'Saffron recommends pausing this ad because it has significantly worse CTR or CPA than other ads in the same ad group, or has zero conversions after 30+ days.',
   enable_ad: 'Saffron recommends re-enabling this ad based on updated performance data or ad group needs.',
+  replace_ad: 'Saffron recommends replacing this underperforming ad with new copy. The new ad goes live immediately and the old one is paused — all in one step.',
 };
 
 // ─── Shared UI Components ────────────────────────────────────────────────────

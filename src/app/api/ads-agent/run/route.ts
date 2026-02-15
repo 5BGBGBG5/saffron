@@ -72,6 +72,7 @@ async function runLayer1(accountId: string): Promise<Layer1Result> {
     'add_negative_keyword', 'add_keyword', 'adjust_bid',
     'adjust_budget', 'pause_keyword', 'pause_campaign',
     'enable_campaign', 'create_ad', 'pause_ad', 'enable_ad',
+    'replace_ad',
   ];
 
   // Build guardrail lookup
@@ -191,14 +192,17 @@ These are naturally expensive B2B keywords. Instead of eliminating them, propose
 (new ad copy, bid adjustments, match type changes). The weekly rehabilitation system handles these separately.
 
 AD MANAGEMENT RULES:
-- You have pause_ad and enable_ad actions available.
-- Propose pause_ad when an ad has SIGNIFICANTLY worse CTR or CPA vs other ads in the SAME ad group (at least 30% worse with 50+ impressions minimum).
+- You have pause_ad, enable_ad, create_ad, and replace_ad actions available.
+- PREFER replace_ad over separate pause_ad + create_ad when you want to swap out an underperforming ad with new copy. This ensures the old ad is only paused after the new one is live.
+- Propose replace_ad when an ad has SIGNIFICANTLY worse CTR or CPA vs other ads in the SAME ad group (at least 30% worse with 50+ impressions minimum) and you can write better copy.
+- Propose pause_ad (without replacement) only when the ad group already has 3+ active ads and removing one improves the group.
+- Propose create_ad (without pausing) when an ad group has only 1 active ad or CTR below 3% and no specific ad needs replacing.
 - Propose pause_ad when an ad has zero conversions after 100+ impressions.
-- Propose create_ad when an ad group has CTR below 3% or only 1 active ad (ad groups should have 2-3 active RSAs for rotation).
 - NEVER pause the last active ad in an ad group — always ensure at least 1 ENABLED ad remains.
+- For replace_ad, action_detail must include: { "ad_group_id": "...", "old_ad_id": "...", "headlines": [{"text": "..."}, ...min 3], "descriptions": [{"text": "..."}, ...min 2], "final_urls": ["..."] }
 - For pause_ad, action_detail must include: { "ad_group_id": "...", "ad_id": "..." }
 - For enable_ad, action_detail must include: { "ad_group_id": "...", "ad_id": "..." }
-- For create_ad, action_detail must include: { "ad_group_id": "...", "headlines": [{"text": "..."}], "descriptions": [{"text": "..."}], "final_urls": ["..."] }
+- For create_ad, action_detail must include: { "ad_group_id": "...", "headlines": [{"text": "..."}, ...min 3], "descriptions": [{"text": "..."}, ...min 2], "final_urls": ["..."] }
 
 ACTION DETAIL ID RULES:
 - ALL IDs in action_detail (campaign_id, ad_group_id, ad_id, criterion_id, budget_id) MUST be real numeric Google Ads IDs from the data provided above. NEVER use placeholder values like "all_active", "all", or descriptive strings.
@@ -253,6 +257,7 @@ If there's nothing actionable (insufficient data, everything looks healthy), ret
     ctr: ad.ctr,
     conversions: ad.conversions,
     costPerConversion: ad.costPerConversion,
+    finalUrls: ad.finalUrls,
   }));
 
   const userPrompt = `Here is the current Google Ads performance data. Analyze it and propose optimizations.
