@@ -42,4 +42,4 @@ export { pauseCampaign, enableCampaign, createSearchCampaign } from './mutations
 export { addKeywords, pauseKeyword, removeKeyword, addNegativeKeywords, removeNegativeKeyword } from './mutations/keywords';
 export { adjustKeywordBid, adjustAdGroupBid } from './mutations/bids';
 export { adjustCampaignBudget } from './mutations/budgets';
-export { createResponsiveSearchAd } from './mutations/ads';
+export { createResponsiveSearchAd, pauseAd, enableAd } from './mutations/ads';

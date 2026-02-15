@@ -16,6 +16,7 @@ import {
   getKeywordPerformance,
   getKeyword7DayAvgCpc,
   getTodaySpend,
+  getAdPerformance,
   microsToDollars,
 } from '@/lib/google-ads';
 import { emitSignal } from '@/lib/signals';
@@ -34,6 +35,7 @@ const supabase = createClient(
 interface Layer1Result {
   campaigns: Awaited<ReturnType<typeof getCampaignPerformance>>;
   keywords: Awaited<ReturnType<typeof getKeywordPerformance>>;
+  ads: Awaited<ReturnType<typeof getAdPerformance>>;
   todaySpend: Awaited<ReturnType<typeof getTodaySpend>>;
   anomalies: string[];
   guardrailViolations: string[];
@@ -55,11 +57,12 @@ async function runLayer1(accountId: string): Promise<Layer1Result> {
   if (!account) throw new Error('Account not found');
 
   // 2. Pull fresh data from Google Ads
-  const [campaigns, keywords, keyword7DayAvg, todaySpend] = await Promise.all([
+  const [campaigns, keywords, keyword7DayAvg, todaySpend, ads] = await Promise.all([
     getCampaignPerformance('LAST_7_DAYS'),
     getKeywordPerformance('LAST_7_DAYS'),
     getKeyword7DayAvgCpc(),
     getTodaySpend(),
+    getAdPerformance('LAST_7_DAYS'),
   ]);
 
   // 3. Guardrail checks
@@ -68,7 +71,7 @@ async function runLayer1(accountId: string): Promise<Layer1Result> {
   const allowedActions = [
     'add_negative_keyword', 'add_keyword', 'adjust_bid',
     'adjust_budget', 'pause_keyword', 'pause_campaign',
-    'enable_campaign', 'create_ad',
+    'enable_campaign', 'create_ad', 'pause_ad', 'enable_ad',
   ];
 
   // Build guardrail lookup
@@ -143,6 +146,7 @@ async function runLayer1(accountId: string): Promise<Layer1Result> {
   return {
     campaigns,
     keywords,
+    ads,
     todaySpend,
     anomalies,
     guardrailViolations,
@@ -186,6 +190,16 @@ food manufacturing, food safety, HACCP, USDA, and related ERP/software terms com
 These are naturally expensive B2B keywords. Instead of eliminating them, propose creative improvements
 (new ad copy, bid adjustments, match type changes). The weekly rehabilitation system handles these separately.
 
+AD MANAGEMENT RULES:
+- You have pause_ad and enable_ad actions available.
+- Propose pause_ad when an ad has SIGNIFICANTLY worse CTR or CPA vs other ads in the SAME ad group (at least 30% worse with 50+ impressions minimum).
+- Propose pause_ad when an ad has zero conversions after 100+ impressions.
+- Propose create_ad when an ad group has CTR below 3% or only 1 active ad (ad groups should have 2-3 active RSAs for rotation).
+- NEVER pause the last active ad in an ad group — always ensure at least 1 ENABLED ad remains.
+- For pause_ad, action_detail must include: { "ad_group_id": "...", "ad_id": "..." }
+- For enable_ad, action_detail must include: { "ad_group_id": "...", "ad_id": "..." }
+- For create_ad, action_detail must include: { "ad_group_id": "...", "headlines": [{"text": "..."}], "descriptions": [{"text": "..."}], "final_urls": ["..."] }
+
 ACCOUNT CONFIG:
 ${JSON.stringify({ name: layer1.account.account_name, budget: layer1.account.monthly_budget, mode: layer1.account.agent_mode, icp: layer1.account.icp_definition, goals: layer1.account.goals }, null, 2)}
 
@@ -219,6 +233,21 @@ Respond with VALID JSON only — no markdown, no code fences. Format:
 
 If there's nothing actionable (insufficient data, everything looks healthy), return an empty proposals array with a narrative explaining why.`;
 
+  // Slim ad data — top 30 by spend, only fields needed for decisions
+  const slimAds = layer1.ads.slice(0, 30).map(ad => ({
+    adId: ad.adId,
+    adGroupId: ad.adGroupId,
+    adGroupName: ad.adGroupName,
+    campaignName: ad.campaignName,
+    headlines: ad.headlines,
+    status: ad.status,
+    impressions: ad.impressions,
+    clicks: ad.clicks,
+    ctr: ad.ctr,
+    conversions: ad.conversions,
+    costPerConversion: ad.costPerConversion,
+  }));
+
   const userPrompt = `Here is the current Google Ads performance data. Analyze it and propose optimizations.
 
 CAMPAIGN PERFORMANCE (last 7 days):
@@ -226,6 +255,9 @@ ${JSON.stringify(layer1.campaigns, null, 2)}
 
 KEYWORD PERFORMANCE (last 7 days):
 ${JSON.stringify(layer1.keywords.slice(0, 50), null, 2)}
+
+AD PERFORMANCE (last 7 days, top 30 by spend):
+${JSON.stringify(slimAds, null, 2)}
 
 TODAY'S SPEND:
 ${JSON.stringify({ spend: microsToDollars(layer1.todaySpend.totalCostMicros), clicks: layer1.todaySpend.totalClicks, impressions: layer1.todaySpend.totalImpressions, conversions: layer1.todaySpend.totalConversions })}`;
@@ -399,7 +431,7 @@ export async function POST(request: NextRequest) {
       try {
         // Layer 1: Deterministic
         const layer1 = await runLayer1(account.id);
-        console.log(`Layer 1 complete: ${layer1.campaigns.length} campaigns, ${layer1.keywords.length} keywords, ${layer1.anomalies.length} anomalies`);
+        console.log(`Layer 1 complete: ${layer1.campaigns.length} campaigns, ${layer1.keywords.length} keywords, ${layer1.ads.length} ads, ${layer1.anomalies.length} anomalies`);
 
         // Layer 2: Claude Opus
         const layer2 = await runLayer2(account.id, layer1);

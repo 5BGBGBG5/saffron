@@ -10,6 +10,8 @@ import {
   adjustAdGroupBid,
   adjustCampaignBudget,
   createResponsiveSearchAd,
+  pauseAd,
+  enableAd,
 } from '@/lib/google-ads';
 import { emitSignal } from '@/lib/signals';
 
@@ -149,6 +151,22 @@ async function executeGoogleAdsAction(
           { headlines, descriptions, finalUrls, path1, path2 },
           customerId
         );
+        return { success: true, result };
+      }
+
+      case 'pause_ad': {
+        const agId = get(actionDetail, 'ad_group_id', 'adGroupId');
+        const adId = get(actionDetail, 'ad_id', 'adId');
+        if (!agId || !adId) return { success: false, error: `Missing ad_group_id or ad_id: ${JSON.stringify(actionDetail)}` };
+        const result = await pauseAd(String(agId), String(adId), customerId);
+        return { success: true, result };
+      }
+
+      case 'enable_ad': {
+        const agId = get(actionDetail, 'ad_group_id', 'adGroupId');
+        const adId = get(actionDetail, 'ad_id', 'adId');
+        if (!agId || !adId) return { success: false, error: `Missing ad_group_id or ad_id: ${JSON.stringify(actionDetail)}` };
+        const result = await enableAd(String(agId), String(adId), customerId);
         return { success: true, result };
       }
 

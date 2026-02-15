@@ -2,7 +2,7 @@
  * Google Ads — Ad creative mutations (responsive search ads).
  */
 
-import { mutateGoogleAds, getCustomerId } from '../client';
+import { mutateGoogleAds, getCustomerId, resourceName } from '../client';
 
 /** Create a responsive search ad (always created as PAUSED for review). */
 export async function createResponsiveSearchAd(
@@ -56,4 +56,26 @@ export async function createResponsiveSearchAd(
     }],
     customerId
   );
+}
+
+/** Pause an ad (set status to PAUSED). */
+export async function pauseAd(adGroupId: string, adId: string, customerId?: string) {
+  return mutateGoogleAds('adGroupAds', [{
+    update: {
+      resourceName: resourceName(customerId, 'adGroupAds', `${adGroupId}~${adId}`),
+      status: 'PAUSED',
+    },
+    updateMask: 'status',
+  }], customerId);
+}
+
+/** Enable an ad (set status to ENABLED). */
+export async function enableAd(adGroupId: string, adId: string, customerId?: string) {
+  return mutateGoogleAds('adGroupAds', [{
+    update: {
+      resourceName: resourceName(customerId, 'adGroupAds', `${adGroupId}~${adId}`),
+      status: 'ENABLED',
+    },
+    updateMask: 'status',
+  }], customerId);
 }

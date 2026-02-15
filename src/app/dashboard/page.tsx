@@ -277,6 +277,8 @@ const actionTypeLabels: Record<string, string> = {
   pause_keyword: 'Pause Keyword',
   enable_campaign: 'Enable Campaign',
   reallocate_budget: 'Reallocate Budget',
+  pause_ad: 'Pause Ad',
+  enable_ad: 'Enable Ad',
 };
 
 const actionTypeTooltips: Record<string, string> = {
@@ -288,6 +290,8 @@ const actionTypeTooltips: Record<string, string> = {
   add_negative_keyword: 'Saffron identified a search term that is consuming budget without converting and recommends blocking it.',
   pause_keyword: 'Saffron recommends pausing this keyword due to sustained poor performance after exhausting optimization tactics.',
   pause_campaign: 'Saffron recommends pausing this campaign. Campaigns with recent conversions are protected from pausing by guardrails.',
+  pause_ad: 'Saffron recommends pausing this ad because it has significantly worse CTR or CPA than other ads in the same ad group, or has zero conversions after 30+ days.',
+  enable_ad: 'Saffron recommends re-enabling this ad based on updated performance data or ad group needs.',
 };
 
 // ─── Shared UI Components ────────────────────────────────────────────────────
