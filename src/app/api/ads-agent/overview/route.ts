@@ -24,7 +24,12 @@ const supabase = createClient(
 
 export async function GET() {
   try {
-    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date();
+    const sixtyDaysAgoDate = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = sixtyDaysAgoDate.toISOString();
+    // GAQL needs YYYY-MM-DD format; LAST_60_DAYS is not a valid predefined range
+    const startDate = sixtyDaysAgoDate.toISOString().split('T')[0];
+    const endDate = now.toISOString().split('T')[0];
 
     // 1. Google Ads: 60 days of daily account-level metrics (single API call)
     const gaqlQuery = `
@@ -38,7 +43,7 @@ export async function GET() {
         metrics.ctr,
         metrics.cost_per_conversion
       FROM customer
-      WHERE segments.date DURING LAST_60_DAYS
+      WHERE segments.date BETWEEN '${startDate}' AND '${endDate}'
       ORDER BY segments.date ASC
     `;
 
