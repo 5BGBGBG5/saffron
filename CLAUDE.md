@@ -1,7 +1,7 @@
 # Saffron — SALT Crew PPC management agent for Google Ads
 
 ## Stack
-Next.js (App Router) + Vercel + Supabase (AiEO project) + Claude API + Google Ads API + HubSpot API
+Next.js (App Router) + Vercel + Supabase (AiEO project) + Claude API + Google Ads API + HubSpot API + SerpAPI
 
 ## API Routes
 
@@ -12,7 +12,7 @@ Next.js (App Router) + Vercel + Supabase (AiEO project) + Claude API + Google Ad
 | `/api/trigger` | POST | Manual trigger — runs the main analysis on demand |
 | `/api/ads-agent/run` | POST/GET | Daily cron — Layer 1 guardrails + Layer 2 Claude analysis |
 | `/api/ads-agent/digest` | POST/GET | Daily cron — generates narrative daily summary |
-| `/api/ads-agent/weekly` | POST/GET | Sunday orchestrator — auction insights, budget reallocation, landing pages, RSA generation, keyword rehabilitation, HubSpot sync |
+| `/api/ads-agent/weekly` | POST/GET | Sunday orchestrator — auction insights, budget reallocation, landing pages, competitor ad scan (SerpAPI), RSA generation (with competitor context), keyword rehabilitation, HubSpot sync |
 | `/api/ads-agent/insights` | GET/POST | GET returns stored insights; POST triggers 365-day historical analysis |
 | `/api/ads-agent/decide` | POST | Executes approved/rejected proposals against Google Ads API |
 | `/api/ads-agent/hubspot-sync` | GET/POST | HubSpot deal sync + conversion quality scoring |
@@ -29,6 +29,8 @@ Next.js (App Router) + Vercel + Supabase (AiEO project) + Claude API + Google Ad
 - `ads_agent_auction_insights` — Competitor auction data
 - `ads_agent_rehabilitation_log` — Strategic keyword recovery tracking
 - `ads_agent_hubspot_deals` — HubSpot deals mapped to campaigns
+- `ads_agent_competitor_ads` — Raw competitor ad copy captured via SerpAPI
+- `ads_agent_competitor_intel` — Weekly competitor messaging analysis summaries
 
 ## Cron Schedule
 
@@ -55,6 +57,7 @@ Saffron writes to the `shared_agent_signals` table (with try/catch — fails sil
 | `proposal_executed` | Approved change applied via Google Ads API | decisionId, actionType, actionSummary, accountId |
 | `weekly_report_complete` | Sunday orchestrator finishes | accounts count, timestamp |
 | `trending_search_term` | High-volume converting search term found | term, conversions, cost |
+| `competitor_ad_scan_complete` | Weekly competitor ad scan finishes | accountId, keywords, ads, competitors |
 
 ## Key Commands
 

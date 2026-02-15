@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createClient } from '@supabase/supabase-js';
 import {
@@ -27,6 +28,7 @@ import {
   Lightbulb,
   Calendar,
   Search,
+  HelpCircle,
 } from 'lucide-react';
 import {
   LineChart,
@@ -274,7 +276,79 @@ const actionTypeLabels: Record<string, string> = {
   create_ad: 'Create Ad',
   pause_keyword: 'Pause Keyword',
   enable_campaign: 'Enable Campaign',
+  reallocate_budget: 'Reallocate Budget',
 };
+
+const actionTypeTooltips: Record<string, string> = {
+  adjust_budget: 'Saffron recommends moving budget between campaigns based on 30-day CPA performance. No campaign will drop below the $25/day minimum.',
+  reallocate_budget: 'Saffron recommends moving budget between campaigns based on 30-day CPA performance. No campaign will drop below the $25/day minimum.',
+  add_keyword: 'Saffron identified a keyword opportunity based on search term performance and campaign targeting gaps.',
+  create_ad: 'Saffron generates new responsive search ad copy for ad groups with CTR below 3%. New ads get a 14-day protection window before budget decisions are affected.',
+  adjust_bid: 'Saffron recommends a bid change based on keyword-level CPA performance. Max 20% change per adjustment.',
+  add_negative_keyword: 'Saffron identified a search term that is consuming budget without converting and recommends blocking it.',
+  pause_keyword: 'Saffron recommends pausing this keyword due to sustained poor performance after exhausting optimization tactics.',
+  pause_campaign: 'Saffron recommends pausing this campaign. Campaigns with recent conversions are protected from pausing by guardrails.',
+};
+
+// ─── Shared UI Components ────────────────────────────────────────────────────
+
+function InfoTooltip({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  const handleEnter = () => {
+    if (ref.current) {
+      const rect = ref.current.getBoundingClientRect();
+      setPos({ top: rect.bottom + 6, left: rect.left + rect.width / 2 });
+    }
+    setShow(true);
+  };
+
+  return (
+    <span
+      ref={ref}
+      className="inline-flex items-center ml-1 cursor-help"
+      onMouseEnter={handleEnter}
+      onMouseLeave={() => setShow(false)}
+      onTouchStart={() => setShow(s => !s)}
+    >
+      <HelpCircle className="w-3.5 h-3.5 text-[var(--text-secondary)] hover:text-[var(--accent-primary)] transition-colors" />
+      {show && pos && createPortal(
+        <div
+          style={{ position: 'fixed', top: pos.top, left: pos.left, transform: 'translateX(-50%)' }}
+          className="z-[999] max-w-xs px-3 py-2 text-xs text-[var(--text-primary)] bg-[var(--background-secondary)] border border-[var(--border-primary)] rounded-lg shadow-lg pointer-events-none"
+        >
+          {text}
+        </div>,
+        document.body
+      )}
+    </span>
+  );
+}
+
+function ExpandableText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!text) return <span className="text-[var(--text-secondary)]">—</span>;
+
+  if (text.length <= 120) {
+    return <span className="text-xs text-[var(--text-secondary)] leading-relaxed">{text}</span>;
+  }
+
+  return (
+    <div>
+      <p className={`text-xs text-[var(--text-secondary)] leading-relaxed ${!expanded ? 'line-clamp-2' : ''}`}>
+        {text}
+      </p>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="text-xs text-[var(--accent-primary)] hover:underline mt-1"
+      >
+        {expanded ? 'Show less' : 'Read more'}
+      </button>
+    </div>
+  );
+}
 
 // ─── Section Components ──────────────────────────────────────────────────────
 
@@ -464,6 +538,7 @@ function DecisionQueue({
                       <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--background-hover)] text-[var(--text-secondary)]">
                         {actionTypeLabels[item.action_type] || item.action_type}
                       </span>
+                      {actionTypeTooltips[item.action_type] && <InfoTooltip text={actionTypeTooltips[item.action_type]} />}
                       <span className="text-xs text-[var(--text-secondary)]">
                         P{item.priority}
                       </span>
@@ -477,7 +552,9 @@ function DecisionQueue({
                 </div>
 
                 {/* Reason */}
-                <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-3">{item.reason}</p>
+                <div className="mb-3">
+                  <ExpandableText text={item.reason} />
+                </div>
 
                 {/* Expandable data snapshot */}
                 {item.data_snapshot && (
@@ -775,12 +852,12 @@ function ChangeLog({
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-[var(--border-primary)]">
-                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Time</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Action</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Detail</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Reason</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Outcome</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">By</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Time <InfoTooltip text="When Saffron generated or executed this action" /></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Action <InfoTooltip text="The type of Google Ads change — budget adjustment, keyword addition, ad creation, etc." /></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Detail <InfoTooltip text="A summary of what was changed — which campaigns, keywords, or ads were affected" /></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Reason <InfoTooltip text="Saffron's explanation of why this change was recommended, including the metrics that triggered it" /></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">Outcome <InfoTooltip text="Current status: pending (awaiting review), approved, executed, rejected, or expired" /></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider">By <InfoTooltip text="Whether this action was initiated by Saffron (agent) or a human reviewer" /></th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wider"></th>
                   </tr>
                 </thead>
@@ -798,11 +875,14 @@ function ChangeLog({
                           </span>
                         </td>
                         <td className="px-4 py-3 text-xs text-[var(--text-primary)] max-w-[300px] truncate">{entry.action_detail}</td>
-                        <td className="px-4 py-3 text-xs text-[var(--text-secondary)] max-w-[200px] truncate">{entry.reason || '—'}</td>
+                        <td className="px-4 py-3 max-w-[300px]">
+                          <ExpandableText text={entry.reason || ''} />
+                        </td>
                         <td className="px-4 py-3">
                           <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${outcomeStyles[entry.outcome] || 'text-[var(--text-secondary)]'}`}>
                             {entry.outcome}
                           </span>
+                          {entry.outcome === 'pending' && <InfoTooltip text="This recommendation is waiting for approval. Go to the Decisions tab to review and approve or reject." />}
                         </td>
                         <td className="px-4 py-3 text-xs text-[var(--text-secondary)]">{entry.executed_by || '—'}</td>
                         <td className="px-4 py-3">
@@ -991,6 +1071,82 @@ function GuardrailConfig({
             </table>
           </div>
         )}
+      </div>
+
+      {/* How Saffron Thinks */}
+      <div className="mt-8">
+        <div className="flex items-center gap-2 mb-4">
+          <Lightbulb className="w-5 h-5 text-[var(--accent-primary)]" />
+          <h2 className="text-lg font-semibold text-[var(--text-primary)]">How Saffron Thinks</h2>
+        </div>
+
+        <div className="space-y-6">
+          <div className="glass-card p-5">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">What Saffron monitors</h3>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              Every day at 10 AM UTC, Saffron pulls fresh data from Google Ads: campaign spend, clicks, impressions,
+              conversions, CPA, CTR, and cost-per-click for every active campaign and keyword. On Sundays, it runs
+              a deeper weekly analysis that adds auction insights (competitor impression share), budget utilization
+              rates, ad creative performance, and search term reports. All decisions are based on real performance
+              data — Saffron never guesses.
+            </p>
+          </div>
+
+          <div className="glass-card p-5">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">How budget recommendations work</h3>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-2">
+              Saffron ranks all campaigns by CPA (cost per acquisition) over the last 30 days. Budget flows from
+              high-CPA campaigns to low-CPA campaigns — the goal is to put more money where it converts best.
+            </p>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-2">
+              Several guardrails keep this safe: no more than 25% of a campaign&apos;s budget can move in a single pass.
+              No campaign can drop below $25/day. Brand campaigns (anything with &quot;brand&quot; or &quot;Inecta&quot; in the name)
+              only compete with other brand campaigns — Saffron will never move budget from a non-brand campaign to
+              fund a brand campaign, or vice versa.
+            </p>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              Saffron also looks at CTR trend and impression share. A campaign with improving engagement might keep
+              its budget even if CPA is temporarily high. A campaign with low impression share and strong CPA is a
+              signal to invest more.
+            </p>
+          </div>
+
+          <div className="glass-card p-5">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">Creative protection</h3>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              When Saffron generates new ad copy for an underperforming ad group, that campaign gets a 14-day
+              protection window. During this window, Saffron will not recommend reducing the campaign&apos;s budget —
+              new creatives need time to gather performance data before anyone makes budget decisions based on them.
+              You&apos;ll see these campaigns marked as &quot;Protected&quot; in the budget analysis.
+            </p>
+          </div>
+
+          <div className="glass-card p-5">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">Cumulative safeguards</h3>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              Saffron tracks how much budget each campaign has lost over the last 60 days through cumulative
+              reallocations. If a campaign has already lost more than 40% of its original budget through repeated
+              cuts, Saffron stops recommending further reductions and flags it for human review instead. This
+              prevents any single campaign from being slowly drained over time without someone explicitly deciding
+              that&apos;s the right call.
+            </p>
+          </div>
+
+          <div className="glass-card p-5">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-2">What &quot;pending&quot; means</h3>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-2">
+              Saffron operates in a recommend-and-approve flow. When it identifies an optimization opportunity, it
+              creates a recommendation with a &quot;pending&quot; status. Nothing changes in your Google Ads account until you
+              explicitly approve it in the Decisions tab.
+            </p>
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              Each recommendation expires after 72 hours if not reviewed. When you approve, Saffron executes the
+              change in Google Ads and logs the result. When you reject, Saffron learns from the feedback and adjusts
+              future recommendations. You can add notes when approving or rejecting to help Saffron understand your
+              reasoning.
+            </p>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -1700,6 +1856,7 @@ export default function SaffronPage() {
 
   const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
   const [guardrailsLoading, setGuardrailsLoading] = useState(true);
+  const [triggering, setTriggering] = useState(false);
 
   const [insights, setInsights] = useState<HistoricalInsight[]>([]);
   const [insightsData, setInsightsData] = useState<InsightsData | null>(null);
@@ -2017,6 +2174,19 @@ export default function SaffronPage() {
     if (!error) setInsights(prev => prev.filter(i => i.id !== id));
   };
 
+  const handleManualTrigger = async () => {
+    setTriggering(true);
+    try {
+      await fetch('/api/trigger', { method: 'POST' });
+      fetchDecisions();
+      fetchNotifications();
+      fetchChangeLog();
+    } catch (err) {
+      console.error('Trigger failed:', err);
+    }
+    setTriggering(false);
+  };
+
   // ── Badge counts ──
   const unreadCount = notifications.filter(n => !n.is_read && !n.is_dismissed).length;
   const pendingCount = decisions.filter(d => d.status === 'pending').length;
@@ -2080,6 +2250,17 @@ export default function SaffronPage() {
                 <option key={a.id} value={a.id}>{a.account_name}</option>
               ))}
             </select>
+
+            {/* Recommend button */}
+            <button
+              onClick={handleManualTrigger}
+              disabled={triggering}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg bg-[var(--accent-primary)]/20 text-[var(--accent-primary)] border border-[var(--accent-primary)]/30 hover:bg-[var(--accent-primary)]/30 disabled:opacity-50 transition-colors"
+            >
+              {triggering ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+              Recommend
+            </button>
+            <InfoTooltip text="Triggers Saffron to analyze all campaigns and generate new recommendations based on the latest Google Ads data." />
 
             {/* Mode indicator */}
             {selectedAccount && (

@@ -6,9 +6,10 @@
  * 2. Auction insights / competitor tracking (F3)
  * 3. Budget reallocation analysis (F1)
  * 4. Landing page mapping + mismatch analysis (F4)
- * 5. RSA generation for underperforming ad groups (F2)
- * 6. Keyword rehabilitation proposals (F2)
- * 7. HubSpot sync + conversion quality scoring (F5)
+ * 5. Competitor ad scan via SerpAPI (F6)
+ * 6. RSA generation for underperforming ad groups — enhanced with competitor context (F2)
+ * 7. Keyword rehabilitation proposals (F2)
+ * 8. HubSpot sync + conversion quality scoring (F5)
  *
  * Each section is wrapped in try/catch so one failure doesn't block others.
  * Called from the Sunday check in run/route.ts.
@@ -33,6 +34,7 @@ import {
 import { syncHubSpotDeals } from '@/lib/hubspot/sync';
 import { getConversionQualityBySource } from '@/lib/hubspot/sync';
 import { emitSignal } from '@/lib/signals';
+import { batchSearchGoogleAds } from '@/lib/serp-api/client';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
@@ -127,6 +129,8 @@ async function runAuctionInsights(accountId: string) {
 
 // ─── Section 2: Budget Reallocation (F1) ────────────────────────────────────
 
+const BUDGET_FLOOR = 25; // $25/day minimum — no campaign should be reduced below this
+
 async function runBudgetReallocation(accountId: string) {
   console.log('  💰 Analyzing budget allocation...');
   const utilization = await getBudgetUtilization();
@@ -143,14 +147,116 @@ async function runBudgetReallocation(accountId: string) {
     return { proposals: 0 };
   }
 
+  // ─── Creative protection: find campaigns with new ad copy in last 14 days ───
+  const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const reassessDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const { data: recentCreatives } = await supabase
+    .from('ads_agent_change_log')
+    .select('data_used')
+    .eq('account_id', accountId)
+    .eq('action_type', 'create_ad')
+    .gte('created_at', fourteenDaysAgo)
+    .in('outcome', ['pending', 'executed', 'auto_executed']);
+
+  const protectedCampaignIds = new Set(
+    (recentCreatives || [])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((r: any) => r.data_used?.campaign_id)
+      .filter(Boolean)
+  );
+
+  // ─── Cumulative reallocation tracking: last 60 days ─────────────────────────
+  const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: recentReallocations } = await supabase
+    .from('ads_agent_change_log')
+    .select('data_used, outcome')
+    .eq('account_id', accountId)
+    .eq('action_type', 'reallocate_budget')
+    .in('outcome', ['executed', 'approved'])
+    .gte('created_at', sixtyDaysAgo);
+
+  // Sum up cumulative budget lost per campaign (as source) in micros
+  const cumulativeLossMicros = new Map<string, number>();
+  for (const entry of recentReallocations || []) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = entry.data_used as any;
+    if (!data?.from_campaign_id || !data?.amount_micros) continue;
+    const prev = cumulativeLossMicros.get(data.from_campaign_id) || 0;
+    cumulativeLossMicros.set(data.from_campaign_id, prev + parseInt(data.amount_micros));
+  }
+
+  // ─── Enrich campaign data with protections ──────────────────────────────────
+  const enrichedCampaigns = utilization.all.map(c => {
+    const isProtected = protectedCampaignIds.has(c.campaignId);
+    const totalLossMicros = cumulativeLossMicros.get(c.campaignId) || 0;
+    const dailyLoss = totalLossMicros / 1_000_000 / 30; // Convert micros to daily dollar equivalent
+    const estimatedOriginalBudget = c.dailyBudget + dailyLoss;
+    const lossPercentage = estimatedOriginalBudget > 0 ? dailyLoss / estimatedOriginalBudget : 0;
+
+    return {
+      id: c.campaignId,
+      name: c.campaignName,
+      budgetId: c.budgetId,
+      dailyBudget: c.dailyBudget,
+      totalSpend: c.totalSpend,
+      conversions: c.conversions,
+      cpa: c.cpa,
+      utilizationRate: c.utilizationRate,
+      clicks: c.clicks,
+      // Brand classification
+      isBrand: c.isBrand,
+      // Engagement metrics
+      ctr: c.ctr,
+      ctrTrend: +(c.ctrTrend.toFixed(3)),
+      searchImpressionShare: c.searchImpressionShare,
+      // Budget floor
+      eligibleAsSource: c.dailyBudget > BUDGET_FLOOR + 5,
+      // Creative protection
+      protected: isProtected,
+      protectedReason: isProtected ? `New creatives testing — reassess after ${reassessDate}` : null,
+      // Cumulative tracking
+      cumulativeLoss60d: +dailyLoss.toFixed(2),
+      estimatedOriginalBudget: +estimatedOriginalBudget.toFixed(2),
+      lossPercentage: +lossPercentage.toFixed(3),
+      flaggedForReview: lossPercentage > 0.4,
+    };
+  });
+
   // Ask Claude to analyze and propose reallocations
   const analysis = await askClaude(
-    `You are Saffron, an AI PPC agent. Analyze budget allocation across campaigns and propose reallocations.
-Rules:
+    `You are Saffron, an AI PPC agent. Analyze budget allocation and propose reallocations.
+
+RULES:
 - Maximum 25% of any campaign's budget can be moved in one reallocation
 - Only propose moving budget FROM high-CPA campaigns TO low-CPA campaigns
 - Both campaigns must have at least 10 clicks in the period
-- Respond with valid JSON only. Format:
+
+BRAND SEPARATION:
+- Campaigns marked isBrand=true are BRAND campaigns
+- Budget can NEVER flow FROM non-brand TO brand
+- Brand campaigns compete only against other brand campaigns
+- Non-brand campaigns compete only against other non-brand campaigns
+
+BUDGET FLOOR:
+- No campaign should be reduced below $${BUDGET_FLOOR}/day
+- Campaigns marked eligibleAsSource=false must NOT be sources for reallocation
+
+CREATIVE PROTECTION:
+- Campaigns marked protected=true have received new ad creatives in the last 14 days
+- NEVER recommend cutting budget from protected campaigns — they need time to test
+- Note the protectedReason in your narrative
+
+CUMULATIVE LOSS:
+- Campaigns with flaggedForReview=true have already lost >40% of their original budget in the last 60 days
+- Do NOT recommend further cuts to these campaigns
+- Instead, mention them in your narrative as needing human review
+
+EVALUATION GUIDANCE:
+- Consider CTR trend (ctrTrend > 0 = improving) — a campaign with improving CTR may deserve budget even if CPA is high
+- Consider impression share (searchImpressionShare) — low impression share + good CPA = opportunity for more budget
+- A declining CTR trend with high CPA is a stronger signal for budget reduction than CPA alone
+
+Respond with valid JSON only. Format:
 {
   "proposals": [
     {
@@ -161,43 +267,43 @@ Rules:
       "to_campaign_name": "...",
       "to_budget_id": "...",
       "amount_micros": "...",
-      "reason": "2-3 sentence explanation"
+      "reason": "A detailed explanation: state the specific metrics (CPA, spend, CTR trend, impression share) for both the source and target campaign, note any guardrail context (budget floor, creative protection, cumulative loss), and what outcome you expect from this reallocation. Write 3-5 sentences in plain English."
     }
   ],
-  "narrative": "Summary of budget analysis"
+  "flagged_campaigns": ["campaign names needing human review"],
+  "narrative": "Summary of budget analysis including any protected or flagged campaigns"
 }
 If no reallocation is warranted, return empty proposals with narrative explaining why.`,
     `CAMPAIGN BUDGET PERFORMANCE (last 30 days):
-${JSON.stringify(utilization.all.map(c => ({
-  id: c.campaignId,
-  name: c.campaignName,
-  budgetId: c.budgetId,
-  dailyBudget: c.dailyBudget,
-  totalSpend: c.totalSpend,
-  conversions: c.conversions,
-  cpa: c.cpa,
-  utilizationRate: c.utilizationRate,
-  clicks: c.clicks,
-})), null, 2)}
+${JSON.stringify(enrichedCampaigns, null, 2)}
 
 ACCOUNT AVERAGE CPA: $${utilization.avgCpa.toFixed(2)}
 TOTAL MONTHLY SPEND: $${utilization.totalMonthlySpend.toFixed(2)}
-TOTAL MONTHLY BUDGET: $${utilization.totalMonthlyBudget.toFixed(2)}`
+TOTAL MONTHLY BUDGET: $${utilization.totalMonthlyBudget.toFixed(2)}
+BUDGET FLOOR: $${BUDGET_FLOOR}/day
+BRAND CAMPAIGNS: ${utilization.brandCampaigns.length}
+NON-BRAND CAMPAIGNS: ${utilization.nonBrandCampaigns.length}`
   );
 
   const proposals = (analysis.proposals as Array<Record<string, unknown>>) || [];
+  const flaggedCampaigns = (analysis.flagged_campaigns as string[]) || [];
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
 
   for (const proposal of proposals) {
-    // Write to change log
+    // Write to change log — include structured data for cumulative tracking
     const { data: logEntry } = await supabase
       .from('ads_agent_change_log')
       .insert({
         account_id: accountId,
         action_type: 'reallocate_budget',
         action_detail: `Reallocate budget from "${proposal.from_campaign_name}" to "${proposal.to_campaign_name}"`,
-        data_used: { utilization: utilization.all.map(c => ({ id: c.campaignId, cpa: c.cpa, spend: c.totalSpend })) },
+        data_used: {
+          from_campaign_id: proposal.from_campaign_id,
+          to_campaign_id: proposal.to_campaign_id,
+          amount_micros: proposal.amount_micros,
+          utilization: utilization.all.map(c => ({ id: c.campaignId, cpa: c.cpa, spend: c.totalSpend })),
+        },
         reason: proposal.reason,
         outcome: 'pending',
         executed_by: 'agent',
@@ -223,21 +329,27 @@ TOTAL MONTHLY BUDGET: $${utilization.totalMonthlyBudget.toFixed(2)}`
     });
   }
 
-  if (proposals.length > 0) {
+  // Notification — include flagged campaigns if any
+  const narrativeParts = [(analysis.narrative as string) || 'Budget reallocation analysis complete.'];
+  if (flaggedCampaigns.length > 0) {
+    narrativeParts.push(`⚠️ Campaigns flagged for human review (>40% cumulative loss): ${flaggedCampaigns.join(', ')}`);
+  }
+
+  if (proposals.length > 0 || flaggedCampaigns.length > 0) {
     await supabase.from('ads_agent_notifications').insert({
       account_id: accountId,
       notification_type: 'budget_reallocation',
-      severity: 'info',
-      title: `Saffron proposes ${proposals.length} budget reallocation${proposals.length === 1 ? '' : 's'}`,
-      message: (analysis.narrative as string) || 'Budget reallocation analysis complete.',
+      severity: flaggedCampaigns.length > 0 ? 'warning' : 'info',
+      title: `Saffron proposes ${proposals.length} budget reallocation${proposals.length === 1 ? '' : 's'}${flaggedCampaigns.length > 0 ? ` (${flaggedCampaigns.length} flagged)` : ''}`,
+      message: narrativeParts.join('\n\n'),
       is_read: false,
       is_dismissed: false,
       created_at: now,
     });
   }
 
-  console.log(`  Generated ${proposals.length} reallocation proposals`);
-  return { proposals: proposals.length };
+  console.log(`  Generated ${proposals.length} reallocation proposals, ${flaggedCampaigns.length} flagged for review`);
+  return { proposals: proposals.length, flagged: flaggedCampaigns.length };
 }
 
 // ─── Section 3: Landing Page Mapping (F4) ───────────────────────────────────
@@ -314,7 +426,191 @@ ${JSON.stringify(keywordMapping.slice(0, 30).map(m => ({
   return { pages: landingPages.length, mismatches: mismatches.length };
 }
 
-// ─── Section 4: RSA Generation (F2) ────────────────────────────────────────
+// ─── Section 4b: Competitor Ad Intelligence (SerpAPI) ────────────────────────
+
+async function runCompetitorAdScan(accountId: string) {
+  if (!process.env.SERPAPI_API_KEY) {
+    console.log('  ⏭️ Competitor ad scan skipped — no SERPAPI_API_KEY configured');
+    return { keywords: 0, ads: 0, skipped: true };
+  }
+
+  console.log('  🔍 Scanning competitor ads via SerpAPI...');
+
+  // Step 1: Pick top keywords to scan
+  let keywords;
+  try {
+    keywords = await getKeywordPerformance('LAST_30_DAYS');
+  } catch (err) {
+    console.error('  Failed to pull keywords for ad scan:', err);
+    return { keywords: 0, ads: 0, error: 'keyword pull failed' };
+  }
+
+  // Deduplicate by keyword text (same keyword can appear in multiple ad groups)
+  const uniqueKeywords = new Map<string, (typeof keywords)[0]>();
+  for (const kw of keywords) {
+    if (!uniqueKeywords.has(kw.keywordText)) {
+      uniqueKeywords.set(kw.keywordText, kw);
+    }
+  }
+
+  // Top 10 by spend
+  const bySpend = [...uniqueKeywords.values()]
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 10);
+
+  // Top 5 by conversions (that aren't already in bySpend)
+  const spendKeywords = new Set(bySpend.map(k => k.keywordText));
+  const byConversions = [...uniqueKeywords.values()]
+    .filter(k => !spendKeywords.has(k.keywordText) && k.conversions > 0)
+    .sort((a, b) => b.conversions - a.conversions)
+    .slice(0, 5);
+
+  const keywordsToScan = [...bySpend, ...byConversions].map(k => k.keywordText);
+  console.log(`  Scanning ${keywordsToScan.length} keywords...`);
+
+  // Step 2: Run SerpAPI searches
+  const serpResults = await batchSearchGoogleAds(keywordsToScan);
+
+  // Step 3: Store competitor ads in Supabase
+  let totalAdsStored = 0;
+  const now = new Date().toISOString();
+
+  for (const [keyword, result] of serpResults) {
+    const allAds = [...result.ads_top, ...result.ads_bottom];
+
+    for (const ad of allAds) {
+      // Skip Inecta's own ads
+      if (ad.domain.includes('inecta')) continue;
+
+      const { error } = await supabase
+        .from('ads_agent_competitor_ads')
+        .insert({
+          account_id: accountId,
+          keyword_text: keyword,
+          competitor_domain: ad.domain,
+          competitor_title: ad.title,
+          competitor_snippet: ad.snippet,
+          competitor_displayed_link: ad.displayed_link,
+          competitor_sitelinks: ad.sitelinks || [],
+          position: ad.position,
+          serp_query: keyword,
+          captured_at: now,
+        });
+
+      if (!error) totalAdsStored++;
+    }
+  }
+
+  console.log(`  Stored ${totalAdsStored} competitor ads across ${keywordsToScan.length} keywords`);
+
+  // Step 4: Ask Claude to analyze competitor messaging patterns
+  const { data: weekAds } = await supabase
+    .from('ads_agent_competitor_ads')
+    .select('*')
+    .eq('account_id', accountId)
+    .gte('captured_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    .order('competitor_domain');
+
+  let competitorsAnalyzed = 0;
+
+  if (weekAds && weekAds.length > 0) {
+    // Group by competitor domain
+    const byDomain = new Map<string, typeof weekAds>();
+    for (const ad of weekAds) {
+      const existing = byDomain.get(ad.competitor_domain) || [];
+      existing.push(ad);
+      byDomain.set(ad.competitor_domain, existing);
+    }
+
+    // Analyze top 5 competitors (by number of ad appearances)
+    const topCompetitors = [...byDomain.entries()]
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 5);
+
+    for (const [domain, ads] of topCompetitors) {
+      const analysis = await askClaude(
+        `You are Saffron, analyzing competitor Google Ads copy for Inecta (B2B food & beverage ERP).
+
+Analyze this competitor's ad copy and identify:
+1. Primary messaging themes (what pain points do they address?)
+2. Specific value propositions and claims
+3. Which food/beverage industries they target
+4. CTA patterns (demo, free trial, pricing, contact?)
+5. Unique angles — what do they say that Inecta's ads currently don't?
+6. Weakness opportunities — where is their messaging weak or generic that Inecta could exploit?
+
+Respond with valid JSON:
+{
+  "primary_themes": ["theme1", "theme2"],
+  "value_propositions": ["claim1", "claim2"],
+  "industries_targeted": ["dairy", "meat processing"],
+  "cta_patterns": ["request demo", "free consultation"],
+  "unique_angles": "Brief description of what they do differently",
+  "weakness_opportunities": "Brief description of exploitable gaps"
+}`,
+        `COMPETITOR: ${domain}
+ADS CAPTURED (${ads.length} ads across ${new Set(ads.map((a: { keyword_text: string }) => a.keyword_text)).size} keywords):
+
+${ads.map((a: { keyword_text: string; position: number; competitor_title: string; competitor_snippet: string; competitor_displayed_link: string }) =>
+  `Keyword: "${a.keyword_text}" | Position: ${a.position}
+  Title: ${a.competitor_title}
+  Description: ${a.competitor_snippet}
+  URL: ${a.competitor_displayed_link}
+`).join('\n')}`
+      );
+
+      // Store analysis
+      const today = new Date().toISOString().split('T')[0];
+      await supabase
+        .from('ads_agent_competitor_intel')
+        .upsert({
+          account_id: accountId,
+          analysis_date: today,
+          competitor_domain: domain,
+          primary_themes: analysis.primary_themes || [],
+          value_propositions: analysis.value_propositions || [],
+          industries_targeted: analysis.industries_targeted || [],
+          cta_patterns: analysis.cta_patterns || [],
+          unique_angles: analysis.unique_angles || null,
+          weakness_opportunities: analysis.weakness_opportunities || null,
+          raw_ad_count: ads.length,
+        }, {
+          onConflict: 'account_id,analysis_date,competitor_domain',
+        });
+
+      competitorsAnalyzed++;
+    }
+
+    // Create notification
+    const competitorNames = topCompetitors.map(([d]) => d).join(', ');
+    await supabase.from('ads_agent_notifications').insert({
+      account_id: accountId,
+      notification_type: 'competitor_intel',
+      severity: 'info',
+      title: `Saffron scanned ${totalAdsStored} competitor ads`,
+      message: `Analyzed ads from ${topCompetitors.length} competitors (${competitorNames}) across ${keywordsToScan.length} keywords.`,
+      is_read: false,
+      is_dismissed: false,
+      created_at: now,
+    });
+  }
+
+  // Emit signal
+  emitSignal('competitor_ad_scan_complete', {
+    accountId,
+    keywords: keywordsToScan.length,
+    ads: totalAdsStored,
+    competitors: competitorsAnalyzed,
+  });
+
+  return {
+    keywords: keywordsToScan.length,
+    ads: totalAdsStored,
+    competitors: competitorsAnalyzed,
+  };
+}
+
+// ─── Section 5: RSA Generation (F2) — Enhanced with Competitor Context ───────
 
 async function runRsaGeneration(accountId: string) {
   console.log('  ✍️ Analyzing ad copy for RSA generation...');
@@ -333,11 +629,11 @@ async function runRsaGeneration(accountId: string) {
   }
 
   // Find ad groups with low CTR (potential for better ad copy)
-  const adGroupPerf = new Map<string, { totalClicks: number; totalImpressions: number; ctr: number; adGroupName: string; campaignName: string; adGroupId: string }>();
+  const adGroupPerf = new Map<string, { totalClicks: number; totalImpressions: number; ctr: number; adGroupName: string; campaignName: string; campaignId: string; adGroupId: string }>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const ad of ads as any[]) {
     const agId = ad.adGroupId;
-    const existing = adGroupPerf.get(agId) || { totalClicks: 0, totalImpressions: 0, ctr: 0, adGroupName: ad.adGroupName, campaignName: ad.campaignName, adGroupId: agId };
+    const existing = adGroupPerf.get(agId) || { totalClicks: 0, totalImpressions: 0, ctr: 0, adGroupName: ad.adGroupName, campaignName: ad.campaignName, campaignId: ad.campaignId, adGroupId: agId };
     existing.totalClicks += ad.clicks || 0;
     existing.totalImpressions += ad.impressions || 0;
     existing.ctr = existing.totalImpressions > 0 ? existing.totalClicks / existing.totalImpressions : 0;
@@ -354,6 +650,45 @@ async function runRsaGeneration(accountId: string) {
     console.log('  No underperforming ad groups found');
     return { proposals: 0 };
   }
+
+  // Pull competitor intelligence for context
+  const { data: competitorIntel } = await supabase
+    .from('ads_agent_competitor_intel')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('analysis_date', { ascending: false })
+    .limit(10);
+
+  const { data: competitorAds } = await supabase
+    .from('ads_agent_competitor_ads')
+    .select('keyword_text, competitor_domain, competitor_title, competitor_snippet')
+    .eq('account_id', accountId)
+    .gte('captured_at', new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
+    .limit(30);
+
+  const competitorContext = competitorIntel?.length
+    ? `
+
+COMPETITOR INTELLIGENCE (from recent ad scans):
+${competitorIntel.map(c =>
+  `${c.competitor_domain}:
+  Themes: ${JSON.stringify(c.primary_themes)}
+  Value props: ${JSON.stringify(c.value_propositions)}
+  Industries: ${JSON.stringify(c.industries_targeted)}
+  Unique angles: ${c.unique_angles}
+  Their weaknesses: ${c.weakness_opportunities}
+`).join('\n')}
+COMPETITOR AD EXAMPLES:
+${(competitorAds || []).slice(0, 15).map(a =>
+  `  "${a.keyword_text}" → ${a.competitor_domain}: "${a.competitor_title}" — ${a.competitor_snippet}`
+).join('\n')}
+
+IMPORTANT: Generate ad copy that COUNTER-POSITIONS against these competitors.
+- If they claim "rapid deployment", emphasize Inecta's depth of food industry expertise.
+- If they're generic about "food ERP", be specific about the industry vertical (dairy, meat, seafood).
+- If they don't mention compliance (HACCP, USDA, FSMA), lead with it.
+- If they all use "Request a Demo" CTAs, try a different approach.`
+    : '';
 
   // Ask Claude to generate RSA copy
   const analysis = await askClaude(
@@ -375,25 +710,33 @@ Respond with valid JSON:
       "ad_group_name": "...",
       "headlines": [{"text": "..."}],
       "descriptions": [{"text": "..."}],
-      "reason": "Why this ad copy should improve CTR"
+      "reason": "Explain: the current CTR and impressions for this ad group, how it compares to other ad groups, what the new ad copy focuses on differently, and what CTR improvement you expect. Write 2-4 sentences."
     }
   ]
 }`,
     `UNDERPERFORMING AD GROUPS (low CTR):
-${JSON.stringify(underperforming, null, 2)}`
+${JSON.stringify(underperforming, null, 2)}${competitorContext}`
   );
 
   const rsaProposals = (analysis.ads as Array<Record<string, unknown>>) || [];
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
 
+  // Map ad group → campaign for cross-referencing by the budget engine
+  const adGroupToCampaign = new Map(
+    Array.from(adGroupPerf.values()).map(ag => [ag.adGroupId, { campaignId: ag.campaignId, campaignName: ag.campaignName }])
+  );
+
   for (const rsa of rsaProposals) {
+    const campaign = adGroupToCampaign.get(rsa.ad_group_id as string);
+
     const { data: logEntry } = await supabase
       .from('ads_agent_change_log')
       .insert({
         account_id: accountId,
         action_type: 'create_ad',
         action_detail: `New RSA for ad group "${rsa.ad_group_name}"`,
+        data_used: { campaign_id: campaign?.campaignId || null, campaign_name: campaign?.campaignName || null },
         reason: rsa.reason,
         outcome: 'pending',
         executed_by: 'agent',
@@ -409,6 +752,7 @@ ${JSON.stringify(underperforming, null, 2)}`
       action_summary: `New RSA ad copy for "${rsa.ad_group_name}"`,
       action_detail: {
         adGroupId: rsa.ad_group_id,
+        campaignId: campaign?.campaignId || null,
         headlines: rsa.headlines,
         descriptions: rsa.descriptions,
         finalUrls: ['https://www.inecta.com'],
@@ -532,7 +876,7 @@ async function runKeywordRehabilitation(accountId: string) {
         account_id: accountId,
         action_type: actionType,
         action_detail: summary,
-        reason: `Keyword rehabilitation (${candidate.industryCategory}): ${nextTactic.description}. Current CPA: $${candidate.currentCpa.toFixed(2)}, Account avg: $${avgCpa.toFixed(2)}`,
+        reason: `Keyword rehabilitation (${candidate.industryCategory}): ${nextTactic.description}. This keyword has spent $${candidate.cost.toFixed(2)} with ${candidate.conversions} conversion${candidate.conversions !== 1 ? 's' : ''} and ${candidate.clicks} clicks. Current CPA: $${candidate.currentCpa.toFixed(2)} vs account average $${avgCpa.toFixed(2)} (${avgCpa > 0 ? ((candidate.currentCpa / avgCpa) * 100 - 100).toFixed(0) : 'N/A'}% above). This is a strategic industry keyword that Saffron protects from elimination — instead, trying ${nextTactic.description.toLowerCase()} to improve performance.`,
         outcome: 'pending',
         executed_by: 'agent',
         created_at: now,
@@ -546,7 +890,7 @@ async function runKeywordRehabilitation(accountId: string) {
       action_type: actionType,
       action_summary: summary,
       action_detail: actionDetail,
-      reason: `Keyword rehabilitation for "${candidate.keywordText}" (${candidate.industryCategory}). Tactic: ${nextTactic.description}`,
+      reason: `Keyword rehabilitation for "${candidate.keywordText}" (${candidate.industryCategory}). This keyword spent $${candidate.cost.toFixed(2)} with ${candidate.conversions} conversion${candidate.conversions !== 1 ? 's' : ''} over 30 days (CPA: $${candidate.currentCpa.toFixed(2)} vs $${avgCpa.toFixed(2)} account avg). Tactic: ${nextTactic.description}. Saffron protects strategic industry keywords from elimination and instead tries optimization tactics.`,
       data_snapshot: { keyword: candidate, avgCpa, tactic: nextTactic },
       risk_level: 'low',
       priority: 7,
@@ -683,7 +1027,15 @@ export async function POST(request: NextRequest) {
         accountResult.landingPages = { error: err instanceof Error ? err.message : String(err) };
       }
 
-      // 5. RSA Generation (F2)
+      // 5. Competitor Ad Scan (SerpAPI)
+      try {
+        accountResult.competitorAds = await runCompetitorAdScan(account.id);
+      } catch (err) {
+        console.error('  Competitor ad scan error:', err);
+        accountResult.competitorAds = { error: err instanceof Error ? err.message : String(err) };
+      }
+
+      // 6. RSA Generation (F2) — Enhanced with Competitor Context
       try {
         accountResult.rsaGeneration = await runRsaGeneration(account.id);
       } catch (err) {
@@ -691,7 +1043,7 @@ export async function POST(request: NextRequest) {
         accountResult.rsaGeneration = { error: err instanceof Error ? err.message : String(err) };
       }
 
-      // 6. Keyword Rehabilitation (F2)
+      // 7. Keyword Rehabilitation (F2)
       try {
         accountResult.rehabilitation = await runKeywordRehabilitation(account.id);
       } catch (err) {
@@ -699,7 +1051,7 @@ export async function POST(request: NextRequest) {
         accountResult.rehabilitation = { error: err instanceof Error ? err.message : String(err) };
       }
 
-      // 7. HubSpot Sync (F5)
+      // 8. HubSpot Sync (F5)
       try {
         accountResult.hubspot = await runHubSpotSync(account.id);
       } catch (err) {

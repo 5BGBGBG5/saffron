@@ -6,6 +6,17 @@
 
 import { queryGoogleAds, microsToDollars } from '../client';
 
+// ─── Brand classification ───────────────────────────────────────────────────
+
+const BRAND_KEYWORDS = ['brand', 'branded', 'inecta'];
+
+function isBrandCampaign(name: string): boolean {
+  const lower = name.toLowerCase();
+  return BRAND_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
 export interface CampaignBudgetPerformance {
   campaignId: string;
   campaignName: string;
@@ -23,6 +34,12 @@ export interface CampaignBudgetPerformance {
   avgCpc: number;
   /** How much of the budget is actually being used (0-1+) */
   utilizationRate: number;
+  /** Whether this is a brand campaign (contains 'brand', 'branded', or 'inecta') */
+  isBrand: boolean;
+  /** Search impression share (0-1) — fraction of eligible impressions received */
+  searchImpressionShare: number;
+  /** CTR trend: (7d CTR - 30d CTR) / 30d CTR. Positive = improving. Computed by getBudgetUtilization(). */
+  ctrTrend: number;
 }
 
 /**
@@ -46,7 +63,8 @@ export async function getCampaignBudgetPerformance(
       metrics.conversions,
       metrics.cost_per_conversion,
       metrics.ctr,
-      metrics.average_cpc
+      metrics.average_cpc,
+      metrics.search_impression_share
     FROM campaign
     WHERE segments.date DURING ${dateRange}
       AND campaign.status = 'ENABLED'
@@ -92,16 +110,27 @@ export async function getCampaignBudgetPerformance(
       ctr: parseFloat(row.metrics.ctr || '0'),
       avgCpc: microsToDollars(row.metrics.averageCpc),
       utilizationRate,
+      isBrand: isBrandCampaign(row.campaign.name),
+      searchImpressionShare: parseFloat(row.metrics.searchImpressionShare || '0'),
+      ctrTrend: 0, // Computed by getBudgetUtilization() from 7d vs 30d comparison
     };
   });
 }
 
 /**
  * Analyze budget utilization — find campaigns that are under/over-spending
- * relative to their daily budget allocation.
+ * relative to their daily budget allocation. Enriches with CTR trend (7d vs 30d).
  */
 export async function getBudgetUtilization(customerId?: string) {
   const campaigns = await getCampaignBudgetPerformance('LAST_30_DAYS', customerId);
+  const recent = await getCampaignBudgetPerformance('LAST_7_DAYS', customerId);
+
+  // Build 7-day CTR lookup and merge trend into 30-day data
+  const recentCtr = new Map(recent.map(c => [c.campaignId, c.ctr]));
+  for (const c of campaigns) {
+    const ctr7d = recentCtr.get(c.campaignId) ?? c.ctr;
+    c.ctrTrend = c.ctr > 0 ? (ctr7d - c.ctr) / c.ctr : 0;
+  }
 
   const underUtilized = campaigns.filter(c => c.utilizationRate < 0.7 && c.totalSpend > 0);
   const overUtilized = campaigns.filter(c => c.utilizationRate > 0.95);
@@ -118,6 +147,8 @@ export async function getBudgetUtilization(customerId?: string) {
     overUtilized,
     mostEfficient: efficient.slice(0, 5),
     leastEfficient: inefficient.slice(0, 5),
+    brandCampaigns: campaigns.filter(c => c.isBrand),
+    nonBrandCampaigns: campaigns.filter(c => !c.isBrand),
     totalMonthlySpend: campaigns.reduce((sum, c) => sum + c.totalSpend, 0),
     totalMonthlyBudget: campaigns.reduce((sum, c) => sum + c.dailyBudget * 30, 0),
     avgCpa: campaigns.reduce((sum, c) => sum + c.cpa, 0) / (campaigns.filter(c => c.cpa > 0).length || 1),

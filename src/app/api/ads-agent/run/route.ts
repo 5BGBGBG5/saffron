@@ -208,7 +208,7 @@ Respond with VALID JSON only — no markdown, no code fences. Format:
       "action_type": "add_negative_keyword|adjust_bid|pause_keyword|...",
       "action_summary": "One-line summary for human reviewer",
       "action_detail": { ... fields needed to execute the action ... },
-      "reason": "2-3 sentence explanation of WHY, referencing specific data",
+      "reason": "A detailed explanation structured as: (1) the specific metrics that triggered this — include actual numbers like CPA, spend, clicks, CTR, conversion count; (2) how this compares to other campaigns or the account average; (3) any guardrail context, e.g. 'Campaign retains $25/day minimum floor' or 'Protected — new creatives deployed 3 days ago'; (4) what outcome you expect if this change is approved. Write 3-5 sentences in plain English.",
       "risk_level": "low|medium|high",
       "priority": 1-10,
       "data_snapshot": { ... key data points that support this recommendation ... }
