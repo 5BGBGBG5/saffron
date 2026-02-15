@@ -29,6 +29,8 @@ import {
   Calendar,
   Search,
   HelpCircle,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react';
 import {
   LineChart,
@@ -41,6 +43,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
+  ReferenceLine,
 } from 'recharts';
 
 export const dynamic = 'force-dynamic';
@@ -357,6 +360,365 @@ function ExpandableText({ text }: { text: string }) {
 }
 
 // ─── Section Components ──────────────────────────────────────────────────────
+
+// ─── 0. Overview Tab ────────────────────────────────────────────────────────
+
+function OverviewTab({
+  data,
+  loading,
+  period,
+  onPeriodChange,
+  onNavigateDecisions,
+}: {
+  data: OverviewData | null;
+  loading: boolean;
+  period: 7 | 30;
+  onPeriodChange: (p: 7 | 30) => void;
+  onNavigateDecisions: () => void;
+}) {
+  if (loading) {
+    return <div className="text-center py-16 text-slate-400">Loading overview...</div>;
+  }
+  if (!data || data.daily.length === 0) {
+    return <div className="text-center py-16 text-slate-400">Unable to load overview data. Check Google Ads API connection.</div>;
+  }
+
+  const daily = data.daily;
+  const currentSlice = daily.slice(-period);
+  const previousSlice = daily.slice(-(period * 2), -period);
+
+  // Aggregate a slice
+  function aggregate(slice: OverviewDaily[]) {
+    const totalSpend = slice.reduce((s, d) => s + d.cost, 0);
+    const totalClicks = slice.reduce((s, d) => s + d.clicks, 0);
+    const totalImpressions = slice.reduce((s, d) => s + d.impressions, 0);
+    const totalConversions = slice.reduce((s, d) => s + d.conversions, 0);
+    return {
+      spend: totalSpend,
+      clicks: totalClicks,
+      impressions: totalImpressions,
+      conversions: totalConversions,
+      cpa: totalConversions > 0 ? totalSpend / totalConversions : 0,
+      ctr: totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0,
+      avgCpc: totalClicks > 0 ? totalSpend / totalClicks : 0,
+    };
+  }
+
+  const current = aggregate(currentSlice);
+  const previous = aggregate(previousSlice);
+
+  function pctChange(curr: number, prev: number): number | null {
+    if (prev === 0) return curr > 0 ? 100 : null;
+    return ((curr - prev) / prev) * 100;
+  }
+
+  // Delta pill component
+  function Delta({ value, invertColor }: { value: number | null; invertColor?: boolean }) {
+    if (value === null) return <span className="text-xs text-slate-500">—</span>;
+    const isPositive = value > 0;
+    const isGood = invertColor ? !isPositive : isPositive;
+    const color = isGood ? 'text-emerald-400' : 'text-red-400';
+    const Icon = isPositive ? ArrowUpRight : ArrowDownRight;
+    return (
+      <span className={`inline-flex items-center gap-0.5 text-xs font-medium ${color}`}>
+        <Icon size={12} />
+        {Math.abs(value).toFixed(1)}%
+      </span>
+    );
+  }
+
+  // Days with agent actions for chart markers
+  const actionDates = new Set(
+    data.agentActions
+      .filter(a => a.outcome === 'executed' || a.outcome === 'auto_executed')
+      .map(a => a.date)
+  );
+
+  // Agent activity stats for the period
+  const periodStart = currentSlice[0]?.date || '';
+  const periodActions = data.agentActions.filter(a => a.date >= periodStart);
+  const executed = periodActions.filter(a => a.outcome === 'executed' || a.outcome === 'auto_executed');
+  const rejected = periodActions.filter(a => a.outcome === 'rejected');
+
+  // Group executed actions by category
+  const actionCategories: Record<string, number> = {};
+  for (const a of executed) {
+    const cat = a.action_type.includes('budget') || a.action_type.includes('reallocate') ? 'Budget'
+      : a.action_type.includes('bid') ? 'Bid'
+      : a.action_type.includes('keyword') || a.action_type.includes('negative') ? 'Keyword'
+      : a.action_type.includes('ad') || a.action_type.includes('create') || a.action_type.includes('replace') ? 'Ad'
+      : 'Other';
+    actionCategories[cat] = (actionCategories[cat] || 0) + 1;
+  }
+
+  // Comparison table rows
+  const comparisonRows = [
+    { label: 'Spend', current: formatCurrency(current.spend), previous: formatCurrency(previous.spend), change: pctChange(current.spend, previous.spend), invertColor: false },
+    { label: 'Clicks', current: formatNumber(current.clicks), previous: formatNumber(previous.clicks), change: pctChange(current.clicks, previous.clicks), invertColor: false },
+    { label: 'Conversions', current: formatNumber(current.conversions), previous: formatNumber(previous.conversions), change: pctChange(current.conversions, previous.conversions), invertColor: false },
+    { label: 'CPA', current: current.cpa > 0 ? formatCurrency(current.cpa) : '—', previous: previous.cpa > 0 ? formatCurrency(previous.cpa) : '—', change: pctChange(current.cpa, previous.cpa), invertColor: true },
+    { label: 'CTR', current: `${current.ctr.toFixed(2)}%`, previous: `${previous.ctr.toFixed(2)}%`, change: pctChange(current.ctr, previous.ctr), invertColor: false },
+    { label: 'Avg CPC', current: current.avgCpc > 0 ? formatCurrency(current.avgCpc) : '—', previous: previous.avgCpc > 0 ? formatCurrency(previous.avgCpc) : '—', change: pctChange(current.avgCpc, previous.avgCpc), invertColor: true },
+  ];
+
+  const catColors: Record<string, string> = { Budget: 'bg-blue-500', Bid: 'bg-amber-500', Keyword: 'bg-emerald-500', Ad: 'bg-purple-500', Other: 'bg-slate-500' };
+
+  return (
+    <div className="space-y-6">
+      {/* Period selector */}
+      <div className="flex items-center gap-2">
+        {([7, 30] as const).map(p => (
+          <button
+            key={p}
+            onClick={() => onPeriodChange(p)}
+            className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+              period === p
+                ? 'bg-teal-500/20 text-teal-400 border border-teal-500/30'
+                : 'bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10'
+            }`}
+          >
+            Last {p} days
+          </button>
+        ))}
+      </div>
+
+      {/* Row 1: Metric cards */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        {/* CPA */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
+            <DollarSign size={14} />
+            Cost per Conversion
+          </div>
+          <div className="text-2xl font-semibold text-white">
+            {current.cpa > 0 ? formatCurrency(current.cpa) : '—'}
+          </div>
+          <Delta value={pctChange(current.cpa, previous.cpa)} invertColor />
+        </div>
+
+        {/* Conversions */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
+            <Target size={14} />
+            Conversions
+          </div>
+          <div className="text-2xl font-semibold text-white">{formatNumber(current.conversions)}</div>
+          <Delta value={pctChange(current.conversions, previous.conversions)} />
+        </div>
+
+        {/* CTR */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
+            <MousePointerClick size={14} />
+            CTR
+          </div>
+          <div className="text-2xl font-semibold text-white">{current.ctr.toFixed(2)}%</div>
+          <Delta value={pctChange(current.ctr, previous.ctr)} />
+        </div>
+
+        {/* Spend */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
+            <Activity size={14} />
+            Spend
+          </div>
+          <div className="text-2xl font-semibold text-white">{formatCurrency(current.spend)}</div>
+          <span className="text-xs text-slate-500">
+            {pctChange(current.spend, previous.spend) !== null
+              ? `${pctChange(current.spend, previous.spend)! > 0 ? '+' : ''}${pctChange(current.spend, previous.spend)!.toFixed(1)}% vs prior`
+              : '—'}
+          </span>
+        </div>
+
+        {/* Pending decisions */}
+        <button
+          onClick={onNavigateDecisions}
+          className={`text-left bg-white/5 border rounded-xl p-4 transition-colors hover:bg-white/10 ${
+            data.pendingCount > 0 ? 'border-amber-500/40' : 'border-white/10'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-slate-400 text-xs mb-1">
+            <Zap size={14} className={data.pendingCount > 0 ? 'text-amber-400' : ''} />
+            Pending Decisions
+          </div>
+          <div className={`text-2xl font-semibold ${data.pendingCount > 0 ? 'text-amber-400' : 'text-white'}`}>
+            {data.pendingCount}
+          </div>
+          <span className="text-xs text-teal-400">Review &rarr;</span>
+        </button>
+      </div>
+
+      {/* Row 2: Trend chart */}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-6">
+        <h3 className="text-sm font-medium text-slate-300 mb-4">Performance Trend</h3>
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={currentSlice} margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+            <XAxis
+              dataKey="date"
+              tickFormatter={(d: string) => {
+                const date = new Date(d + 'T00:00:00');
+                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+              }}
+              stroke="rgba(255,255,255,0.3)"
+              fontSize={11}
+            />
+            <YAxis
+              yAxisId="cpa"
+              orientation="left"
+              stroke="rgba(20,184,166,0.5)"
+              fontSize={11}
+              tickFormatter={(v: number) => `$${v.toFixed(0)}`}
+            />
+            <YAxis
+              yAxisId="conv"
+              orientation="right"
+              stroke="rgba(245,158,11,0.5)"
+              fontSize={11}
+            />
+            <Tooltip
+              contentStyle={{ backgroundColor: 'rgba(15,23,42,0.95)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', fontSize: '12px' }}
+              labelFormatter={((d: string) => {
+                const date = new Date(d + 'T00:00:00');
+                return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+              }) as any}
+              formatter={((value: number, name: string) => {
+                if (name === 'CPA') return [`$${value.toFixed(2)}`, name];
+                if (name === 'Conversions') return [value.toFixed(1), name];
+                return [value, name];
+              }) as any}
+            />
+            <Legend />
+            {/* Agent action markers */}
+            {currentSlice.map((d) =>
+              actionDates.has(d.date) ? (
+                <ReferenceLine
+                  key={d.date}
+                  x={d.date}
+                  yAxisId="cpa"
+                  stroke="rgba(139,92,246,0.4)"
+                  strokeDasharray="3 3"
+                  label=""
+                />
+              ) : null
+            )}
+            <Line
+              yAxisId="cpa"
+              type="monotone"
+              dataKey="costPerConversion"
+              name="CPA"
+              stroke="#14b8a6"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4 }}
+            />
+            <Line
+              yAxisId="conv"
+              type="monotone"
+              dataKey="conversions"
+              name="Conversions"
+              stroke="#f59e0b"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4 }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+        {actionDates.size > 0 && (
+          <p className="text-xs text-slate-500 mt-2">
+            <span className="inline-block w-3 h-0.5 bg-purple-400/50 mr-1 align-middle" /> Dashed lines mark days when Saffron executed changes
+          </p>
+        )}
+      </div>
+
+      {/* Row 3: Agent activity */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Actions Executed */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+          <h3 className="text-sm font-medium text-slate-300 mb-3">Actions Executed</h3>
+          <div className="text-3xl font-semibold text-white mb-2">{executed.length}</div>
+          {Object.keys(actionCategories).length > 0 ? (
+            <>
+              <div className="flex gap-1 h-2 rounded-full overflow-hidden mb-3">
+                {Object.entries(actionCategories).map(([cat, count]) => (
+                  <div
+                    key={cat}
+                    className={`${catColors[cat] || 'bg-slate-500'}`}
+                    style={{ width: `${(count / executed.length) * 100}%` }}
+                  />
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs text-slate-400">
+                {Object.entries(actionCategories).map(([cat, count]) => (
+                  <span key={cat} className="flex items-center gap-1">
+                    <span className={`inline-block w-2 h-2 rounded-full ${catColors[cat] || 'bg-slate-500'}`} />
+                    {cat} ({count})
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-slate-500">No actions executed yet</p>
+          )}
+          {rejected.length > 0 && (
+            <p className="text-xs text-slate-500 mt-2">{rejected.length} rejected</p>
+          )}
+        </div>
+
+        {/* Decisions Reviewed */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+          <h3 className="text-sm font-medium text-slate-300 mb-3">Decisions Reviewed</h3>
+          {executed.length + rejected.length > 0 ? (
+            <>
+              <div className="text-3xl font-semibold text-white mb-2">
+                {executed.length + rejected.length}
+              </div>
+              <p className="text-xs text-slate-400">
+                {executed.length} approved, {rejected.length} rejected, {data.pendingCount} still pending
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="text-3xl font-semibold text-slate-500 mb-2">0</div>
+              <p className="text-xs text-slate-500">No decisions reviewed yet</p>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Row 4: Period comparison table */}
+      {previousSlice.length > 0 && (
+        <div className="bg-white/5 border border-white/10 rounded-xl p-5">
+          <h3 className="text-sm font-medium text-slate-300 mb-3">
+            Last {period} Days vs Previous {period} Days
+          </h3>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-slate-500 border-b border-white/10">
+                <th className="text-left py-2 font-medium">Metric</th>
+                <th className="text-right py-2 font-medium">This Period</th>
+                <th className="text-right py-2 font-medium">Previous</th>
+                <th className="text-right py-2 font-medium">Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparisonRows.map(row => (
+                <tr key={row.label} className="border-b border-white/5">
+                  <td className="py-2 text-slate-300">{row.label}</td>
+                  <td className="py-2 text-right text-white">{row.current}</td>
+                  <td className="py-2 text-right text-slate-400">{row.previous}</td>
+                  <td className="py-2 text-right">
+                    <Delta value={row.change} invertColor={row.invertColor} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── 1. Notification Center ─────────────────────────────────────────────────
 
@@ -1820,9 +2182,27 @@ function RevenuePanel({
 
 // ─── Active Tab Navigation ──────────────────────────────────────────────────
 
-type TabId = 'notifications' | 'decisions' | 'digest' | 'insights' | 'competitors' | 'revenue' | 'changelog' | 'guardrails';
+type TabId = 'overview' | 'notifications' | 'decisions' | 'digest' | 'insights' | 'competitors' | 'revenue' | 'changelog' | 'guardrails';
+
+type OverviewDaily = {
+  date: string;
+  impressions: number;
+  clicks: number;
+  cost: number;
+  conversions: number;
+  avgCpc: number;
+  ctr: number;
+  costPerConversion: number;
+};
+
+type OverviewData = {
+  daily: OverviewDaily[];
+  agentActions: Array<{ date: string; action_type: string; outcome: string }>;
+  pendingCount: number;
+};
 
 const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
+  { id: 'overview', label: 'Overview', icon: TrendingUp },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'decisions', label: 'Decisions', icon: Zap },
   { id: 'digest', label: 'Daily Digest', icon: BarChart3 },
@@ -1881,7 +2261,11 @@ export default function SaffronPage() {
   const [rehabData, setRehabData] = useState<any[]>([]);
   const [rehabLoading, setRehabLoading] = useState(true);
 
-  const [activeTab, setActiveTab] = useState<TabId>('notifications');
+  const [overviewData, setOverviewData] = useState<OverviewData | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewPeriod, setOverviewPeriod] = useState<7 | 30>(30);
+
+  const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [error, setError] = useState<string | null>(null);
 
   const selectedAccount = useMemo(
@@ -2059,16 +2443,35 @@ export default function SaffronPage() {
     setRehabLoading(false);
   }, [selectedAccountId]);
 
+  // ── Fetch overview data ──
+  const fetchOverview = useCallback(async () => {
+    setOverviewLoading(true);
+    try {
+      const cronSecret = process.env.NEXT_PUBLIC_CRON_SECRET || '';
+      const res = await fetch('/api/ads-agent/overview', {
+        headers: cronSecret ? { authorization: `Bearer ${cronSecret}` } : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setOverviewData(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch overview:', err);
+    }
+    setOverviewLoading(false);
+  }, []);
+
   // ── Load data when account changes ──
   useEffect(() => {
     if (!selectedAccountId) return;
+    fetchOverview();
     fetchNotifications();
     fetchDecisions();
     fetchDigest();
     fetchChangeLog();
     fetchGuardrails();
     fetchInsights();
-  }, [selectedAccountId, fetchNotifications, fetchDecisions, fetchDigest, fetchChangeLog, fetchGuardrails, fetchInsights]);
+  }, [selectedAccountId, fetchOverview, fetchNotifications, fetchDecisions, fetchDigest, fetchChangeLog, fetchGuardrails, fetchInsights]);
 
   // ── Re-fetch digest when date changes ──
   useEffect(() => {
@@ -2326,6 +2729,15 @@ export default function SaffronPage() {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.15 }}
           >
+            {activeTab === 'overview' && (
+              <OverviewTab
+                data={overviewData}
+                loading={overviewLoading}
+                period={overviewPeriod}
+                onPeriodChange={setOverviewPeriod}
+                onNavigateDecisions={() => setActiveTab('decisions')}
+              />
+            )}
             {activeTab === 'notifications' && (
               <NotificationCenter
                 notifications={notifications}
