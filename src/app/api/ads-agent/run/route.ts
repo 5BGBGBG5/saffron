@@ -20,6 +20,7 @@ import {
   microsToDollars,
 } from '@/lib/google-ads';
 import { emitSignal } from '@/lib/signals';
+import { runRecommendationLoop, AgentLoopResult, AgentToolCall } from '@/lib/google-ads/agent-loop';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120; // Allow up to 2 min for Opus reasoning
@@ -157,9 +158,9 @@ async function runLayer1(accountId: string): Promise<Layer1Result> {
   };
 }
 
-// ─── Layer 2: Claude Opus AI Agent ──────────────────────────────────────────
+// ─── Layer 2 Legacy: Single-pass Claude (fallback if agent loop fails) ──────
 
-async function runLayer2(accountId: string, layer1: Layer1Result) {
+async function runLayer2Legacy(accountId: string, layer1: Layer1Result) {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (!anthropicKey) {
     console.warn('ANTHROPIC_API_KEY not set — skipping Layer 2');
@@ -331,10 +332,33 @@ async function writeProposals(
   accountId: string,
   proposals: Array<Record<string, unknown>>,
   narrative: string,
-  layer1: Layer1Result
+  layer1: Layer1Result,
+  loopResult?: AgentLoopResult | null
 ) {
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(); // 72 hours
+
+  // Write agent_investigation entry to change log if we ran the agent loop
+  if (loopResult) {
+    await supabase.from('ads_agent_change_log').insert({
+      account_id: accountId,
+      action_type: 'agent_investigation',
+      action_detail: `Agent loop: ${loopResult.action} — ${loopResult.iterations} iterations, ${loopResult.tool_calls.length} tool calls [${loopResult.tools_used.join(', ')}]`,
+      data_used: {
+        iterations: loopResult.iterations,
+        tools_used: loopResult.tools_used,
+        tool_calls: loopResult.tool_calls,
+        action: loopResult.action,
+        proposals_count: loopResult.proposals.length,
+      },
+      reason: loopResult.action === 'skip'
+        ? loopResult.skip_reason
+        : loopResult.investigation_summary,
+      outcome: loopResult.action === 'submit' ? 'pending' : 'skipped',
+      executed_by: 'agent',
+      created_at: now,
+    });
+  }
 
   for (const proposal of proposals) {
     // 1. Write to change log first
@@ -353,7 +377,7 @@ async function writeProposals(
       .select('id')
       .single();
 
-    // 2. Write to decision queue
+    // 2. Write to decision queue (with agent loop metadata if available)
     await supabase.from('ads_agent_decision_queue').insert({
       account_id: accountId,
       change_log_id: logEntry?.id || null,
@@ -367,6 +391,11 @@ async function writeProposals(
       status: 'pending',
       expires_at: expiresAt,
       created_at: now,
+      ...(loopResult ? {
+        agent_loop_iterations: loopResult.iterations,
+        agent_loop_tools_used: loopResult.tools_used,
+        agent_investigation_summary: loopResult.investigation_summary,
+      } : {}),
     });
   }
 
@@ -445,16 +474,39 @@ export async function POST(request: NextRequest) {
         const layer1 = await runLayer1(account.id);
         console.log(`Layer 1 complete: ${layer1.campaigns.length} campaigns, ${layer1.keywords.length} keywords, ${layer1.ads.length} ads, ${layer1.anomalies.length} anomalies`);
 
-        // Layer 2: Claude Opus
-        const layer2 = await runLayer2(account.id, layer1);
-        console.log(`Layer 2 complete: ${layer2.proposals?.length || 0} proposals`);
+        // Fetch recent decisions for the agent loop
+        const { data: recentDecisions } = await supabase
+          .from('ads_agent_decision_queue')
+          .select('action_type, action_summary, status, review_notes')
+          .eq('account_id', account.id)
+          .in('status', ['approved', 'rejected'])
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+        // Layer 2: Agent loop (with legacy fallback)
+        let loopResult: AgentLoopResult | null = null;
+        let layer2: { proposals: Array<Record<string, unknown>>; narrative: string };
+
+        try {
+          loopResult = await runRecommendationLoop(layer1, account.id, recentDecisions || []);
+          layer2 = {
+            proposals: loopResult.proposals as unknown as Array<Record<string, unknown>>,
+            narrative: loopResult.narrative,
+          };
+          console.log(`Agent loop complete: ${loopResult.proposals.length} proposals, ${loopResult.iterations} iterations, tools: [${loopResult.tools_used.join(', ')}]`);
+        } catch (loopErr) {
+          console.error('Agent loop failed, falling back to legacy Layer 2:', loopErr);
+          layer2 = await runLayer2Legacy(account.id, layer1);
+          console.log(`Layer 2 (legacy fallback) complete: ${layer2.proposals?.length || 0} proposals`);
+        }
 
         // Write to Supabase
         await writeProposals(
           account.id,
           layer2.proposals || [],
           layer2.narrative || '',
-          layer1
+          layer1,
+          loopResult
         );
 
         // Auto-execute low-risk actions if in semi_auto or autonomous mode
