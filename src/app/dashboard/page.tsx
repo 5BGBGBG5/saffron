@@ -2642,7 +2642,18 @@ export default function SaffronPage() {
             <h1 className="text-2xl font-bold bg-gradient-to-r from-white via-teal-200 to-emerald-200 bg-clip-text text-transparent">
               Saffron
             </h1>
-            <p className="text-sm text-[var(--text-secondary)]">PPC Agent — SALT Crew</p>
+            <p className="text-sm text-[var(--text-secondary)]">
+              PPC Agent —{' '}
+              <a
+                href="https://www.inecta-salt.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-0.5 text-[var(--accent-primary)] hover:underline"
+              >
+                SALT Crew
+                <ArrowUpRight className="w-3 h-3" />
+              </a>
+            </p>
           </div>
 
           <div className="flex items-center gap-3">
