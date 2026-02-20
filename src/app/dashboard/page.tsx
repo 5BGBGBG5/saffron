@@ -2679,6 +2679,15 @@ export default function SaffronPage() {
             </button>
             <InfoTooltip text="Triggers Saffron to analyze all campaigns and generate new recommendations based on the latest Google Ads data." />
 
+            {/* Changelog link */}
+            <a
+              href="/changelog"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg text-[var(--text-secondary)] border border-[var(--border-primary)] hover:text-[var(--text-primary)] hover:border-[var(--accent-primary)]/30 transition-colors"
+            >
+              <FileText className="w-4 h-4" />
+              Changelog
+            </a>
+
             {/* Mode indicator */}
             {selectedAccount && (
               <div className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium ${modeConfig[selectedAccount.agent_mode].bg}`}>
