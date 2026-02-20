@@ -31,6 +31,25 @@ function get(detail: Record<string, unknown>, snakeKey: string, camelKey: string
   return detail[snakeKey] ?? detail[camelKey];
 }
 
+// Helper: truncate RSA asset text at word boundary to stay within Google Ads limits
+// Headlines: 30 chars, Descriptions: 90 chars
+function truncateAsset(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  const truncated = text.slice(0, maxLen);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return lastSpace > maxLen * 0.6 ? truncated.slice(0, lastSpace) : truncated;
+}
+
+function sanitizeAdCopy<
+  H extends { text: string },
+  D extends { text: string }
+>(headlines: H[], descriptions: D[]): { headlines: H[]; descriptions: D[] } {
+  return {
+    headlines: headlines.map(h => ({ ...h, text: truncateAsset(h.text, 30) })),
+    descriptions: descriptions.map(d => ({ ...d, text: truncateAsset(d.text, 90) })),
+  };
+}
+
 async function executeGoogleAdsAction(
   actionType: string,
   actionDetail: Record<string, unknown>
@@ -128,7 +147,8 @@ async function executeGoogleAdsAction(
 
       case 'adjust_budget': {
         const budgetId = get(actionDetail, 'budget_id', 'budgetId');
-        const newAmount = get(actionDetail, 'new_amount_micros', 'newAmountMicros');
+        const newAmount = get(actionDetail, 'new_amount_micros', 'newAmountMicros')
+          ?? get(actionDetail, 'new_budget_micros', 'newBudgetMicros');
         if (!budgetId || !newAmount) return { success: false, error: `Missing budget_id or new_amount_micros: ${JSON.stringify(actionDetail)}` };
         const result = await adjustCampaignBudget(
           String(budgetId),
@@ -140,12 +160,13 @@ async function executeGoogleAdsAction(
 
       case 'create_ad': {
         const agId = get(actionDetail, 'ad_group_id', 'adGroupId');
-        const headlines = (actionDetail.headlines as Array<{ text: string }>);
-        const descriptions = (actionDetail.descriptions as Array<{ text: string }>);
+        const rawHeadlines = (actionDetail.headlines as Array<{ text: string }>);
+        const rawDescriptions = (actionDetail.descriptions as Array<{ text: string }>);
         const finalUrls = (get(actionDetail, 'final_urls', 'finalUrls') as string[]);
         const path1 = (actionDetail.path1 as string | undefined);
         const path2 = (actionDetail.path2 as string | undefined);
         if (!agId) return { success: false, error: `Missing ad_group_id: ${JSON.stringify(actionDetail)}` };
+        const { headlines, descriptions } = sanitizeAdCopy(rawHeadlines || [], rawDescriptions || []);
         const result = await createResponsiveSearchAd(
           String(agId),
           { headlines, descriptions, finalUrls, path1, path2 },
@@ -184,10 +205,12 @@ async function executeGoogleAdsAction(
           return { success: false, error: `Missing required fields for replace_ad: ${JSON.stringify(actionDetail)}` };
         }
 
+        const sanitized = sanitizeAdCopy(headlines, descriptions);
+
         // Step 1: Create the new ad first (fail-safe: don't pause old ad if creation fails)
         const createResult = await createResponsiveSearchAd(String(agId), {
-          headlines,
-          descriptions,
+          headlines: sanitized.headlines,
+          descriptions: sanitized.descriptions,
           finalUrls,
           ...(path1 && { path1: String(path1) }),
           ...(path2 && { path2: String(path2) }),

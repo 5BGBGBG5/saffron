@@ -204,6 +204,9 @@ AD MANAGEMENT RULES:
 - For pause_ad, action_detail must include: { "ad_group_id": "...", "ad_id": "..." }
 - For enable_ad, action_detail must include: { "ad_group_id": "...", "ad_id": "..." }
 - For create_ad, action_detail must include: { "ad_group_id": "...", "headlines": [{"text": "..."}, ...min 3], "descriptions": [{"text": "..."}, ...min 2], "final_urls": ["..."] }
+- HEADLINE TEXT LIMIT: Each headline must be 30 characters or fewer. This is a hard Google Ads API limit.
+- DESCRIPTION TEXT LIMIT: Each description must be 90 characters or fewer. This is a hard Google Ads API limit.
+- Write concise ad copy. Longer copy WILL be truncated and may lose meaning.
 
 ACTION DETAIL ID RULES:
 - ALL IDs in action_detail (campaign_id, ad_group_id, ad_id, criterion_id, budget_id) MUST be real numeric Google Ads IDs from the data provided above. NEVER use placeholder values like "all_active", "all", or descriptive strings.

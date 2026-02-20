@@ -97,6 +97,9 @@ Instead propose creative improvements (new ad copy, bid adjustments, match type 
 - pause_ad: when >100 impressions, zero conversions, and ad group has 3+ active ads.
 - NEVER pause the last active ad in an ad group.
 - For replace_ad: action_detail needs ad_group_id, old_ad_id, headlines (3+), descriptions (2+), final_urls.
+- HEADLINE TEXT LIMIT: Each headline must be 30 characters or fewer. This is a hard Google Ads API limit.
+- DESCRIPTION TEXT LIMIT: Each description must be 90 characters or fewer. This is a hard Google Ads API limit.
+- Write concise ad copy. Longer copy WILL be truncated and may lose meaning.
 
 ## Action Detail ID Rules
 ALL IDs (campaign_id, ad_group_id, ad_id, criterion_id, budget_id) MUST be real numeric Google Ads IDs from the data provided. NEVER use placeholders.

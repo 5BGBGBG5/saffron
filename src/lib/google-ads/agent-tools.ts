@@ -538,6 +538,26 @@ export async function executeToolCall(
         }
       }
 
+      // Ad copy character limits (Google Ads RSA: headlines 30 chars, descriptions 90 chars)
+      if (['create_ad', 'replace_ad'].includes(actionType)) {
+        const headlines = actionDetail.headlines as Array<{ text: string }> | undefined;
+        const descriptions = actionDetail.descriptions as Array<{ text: string }> | undefined;
+        if (headlines) {
+          for (const h of headlines) {
+            if (h.text && h.text.length > 30) {
+              violations.push(`Headline too long (${h.text.length}/30): "${h.text}"`);
+            }
+          }
+        }
+        if (descriptions) {
+          for (const d of descriptions) {
+            if (d.text && d.text.length > 90) {
+              violations.push(`Description too long (${d.text.length}/90): "${d.text}"`);
+            }
+          }
+        }
+      }
+
       // ID validation
       const idFields = ['campaign_id', 'ad_group_id', 'ad_id', 'criterion_id', 'budget_id'];
       for (const field of idFields) {
