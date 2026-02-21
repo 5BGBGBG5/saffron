@@ -31,19 +31,19 @@ export async function GET() {
     const startDate = sixtyDaysAgoDate.toISOString().split('T')[0];
     const endDate = now.toISOString().split('T')[0];
 
-    // 1. Google Ads: 60 days of daily account-level metrics (single API call)
+    // 1. Google Ads: 60 days of daily metrics via campaign resource
+    //    (customer resource doesn't support BETWEEN date filtering;
+    //     aggregate per-campaign rows into daily totals in code)
     const gaqlQuery = `
       SELECT
         segments.date,
         metrics.impressions,
         metrics.clicks,
         metrics.cost_micros,
-        metrics.conversions,
-        metrics.average_cpc,
-        metrics.ctr,
-        metrics.cost_per_conversion
-      FROM customer
+        metrics.conversions
+      FROM campaign
       WHERE segments.date BETWEEN '${startDate}' AND '${endDate}'
+        AND campaign.status != 'REMOVED'
       ORDER BY segments.date ASC
     `;
 
@@ -64,21 +64,38 @@ export async function GET() {
         .eq('status', 'pending'),
     ]);
 
-    // Parse Google Ads daily data
-    const daily = (adsResults as Array<Record<string, unknown>>).map((row) => {
+    // Parse Google Ads daily data — aggregate per-campaign rows into daily totals
+    const dailyMap = new Map<string, { impressions: number; clicks: number; costMicros: number; conversions: number }>();
+
+    for (const row of adsResults as Array<Record<string, unknown>>) {
       const segments = row.segments as Record<string, unknown> | undefined;
       const metrics = row.metrics as Record<string, unknown> | undefined;
-      return {
-        date: String(segments?.date || ''),
-        impressions: Number(metrics?.impressions || 0),
-        clicks: Number(metrics?.clicks || 0),
-        cost: microsToDollars(metrics?.costMicros as string | number | null),
-        conversions: Number(metrics?.conversions || 0),
-        avgCpc: microsToDollars(metrics?.averageCpc as string | number | null),
-        ctr: Number(metrics?.ctr || 0),
-        costPerConversion: microsToDollars(metrics?.costPerConversion as string | number | null),
-      };
-    });
+      const date = String(segments?.date || '');
+      if (!date) continue;
+
+      const existing = dailyMap.get(date) || { impressions: 0, clicks: 0, costMicros: 0, conversions: 0 };
+      existing.impressions += Number(metrics?.impressions || 0);
+      existing.clicks += Number(metrics?.clicks || 0);
+      existing.costMicros += Number(metrics?.costMicros || 0);
+      existing.conversions += Number(metrics?.conversions || 0);
+      dailyMap.set(date, existing);
+    }
+
+    const daily = Array.from(dailyMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, d]) => {
+        const cost = microsToDollars(d.costMicros);
+        return {
+          date,
+          impressions: d.impressions,
+          clicks: d.clicks,
+          cost,
+          conversions: d.conversions,
+          avgCpc: d.clicks > 0 ? cost / d.clicks : 0,
+          ctr: d.impressions > 0 ? d.clicks / d.impressions : 0,
+          costPerConversion: d.conversions > 0 ? cost / d.conversions : 0,
+        };
+      });
 
     // Parse agent actions with date normalization
     const agentActions = (actionsRes.data || []).map((a) => ({
