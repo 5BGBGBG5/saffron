@@ -2631,15 +2631,11 @@ export default function SaffronPage() {
         <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-emerald-400/10 rounded-full blur-3xl animate-float" style={{ animationDelay: '2s' }} />
       </div>
 
-      <div className="relative z-10 max-w-6xl mx-auto px-4 py-6">
+      <div className="relative z-10 max-w-7xl mx-auto px-4 py-6">
         {/* ── Page Header ── */}
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6"
-        >
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-2xl font-bold bg-gradient-to-r from-white via-teal-200 to-emerald-200 bg-clip-text text-transparent">
+            <h1 className="text-2xl font-bold text-[var(--text-primary)]">
               Saffron
             </h1>
             <p className="text-sm text-[var(--text-secondary)]">
@@ -2701,7 +2697,7 @@ export default function SaffronPage() {
               </div>
             )}
           </div>
-        </motion.div>
+        </div>
 
         {/* ── Tab Navigation ── */}
         <div className="border-b border-[var(--border-primary)] mb-6">
