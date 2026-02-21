@@ -51,7 +51,7 @@ export async function GET() {
     const [adsResults, actionsRes, pendingRes] = await Promise.all([
       queryGoogleAds(gaqlQuery).catch((err: Error) => {
         console.error('Google Ads overview query failed:', err.message);
-        return [];
+        return { __error: err.message };
       }),
       supabase
         .from('ads_agent_change_log')
@@ -63,6 +63,16 @@ export async function GET() {
         .select('*', { count: 'exact', head: true })
         .eq('status', 'pending'),
     ]);
+
+    // Surface Google Ads errors for debugging
+    if (adsResults && typeof adsResults === 'object' && '__error' in (adsResults as Record<string, unknown>)) {
+      return NextResponse.json({
+        daily: [],
+        agentActions: [],
+        pendingCount: 0,
+        _debug_google_ads_error: (adsResults as Record<string, unknown>).__error,
+      });
+    }
 
     // Parse Google Ads daily data — aggregate per-campaign rows into daily totals
     const dailyMap = new Map<string, { impressions: number; clicks: number; costMicros: number; conversions: number }>();
